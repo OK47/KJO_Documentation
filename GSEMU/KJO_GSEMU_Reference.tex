@@ -1,0 +1,243 @@
+\documentclass[11pt,letterpaper]{article}
+\input{../shared/KJO_preamble}
+\newcommand{\docversion}{0.1}
+\newcommand{\docdate}{March 2026}
+\lhead{\textsc{KJO GSE Management Unit}}
+\rhead{\textsc{GSEMU Reference} --- v\docversion}
+\cfoot{\thepage\ of \pageref{LastPage}}
+\hypersetup{pdftitle={KJO GSEMU Reference}, pdfauthor={Ken Overton}}
+
+\begin{document}
+\input{../shared/KJO_tikz_styles}
+
+\KJOtitlepage%
+  {GSE Management Unit (GSEMU)}%
+  {Hardware and Software Reference}%
+  {\docversion}{\docdate}%
+  {This document describes the hardware, software architecture, Fill valve
+   control, and GPIO handshake protocol of the GSE Management Unit.
+   The GSEMU is mounted on the launch pad and controls the propellant fill
+   valve and the umbilical quick-release servo.}
+
+\tableofcontents\newpage
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{Hardware Overview}
+%═══════════════════════════════════════════════════════════════════════════════
+
+\subsection{Component Summary}
+
+\begin{center}
+\begin{tabular}{@{}llll@{}}
+\toprule
+Component & Part & Interface & Notes \\
+\midrule
+Microcontroller & Adafruit Feather M0 (ATSAMD21G18A, 48~MHz)   & ---     & \\
+OLED Display    & SH1107, 128$\times$64, 1.12\textquotedbl       & I\textsuperscript{2}C & \\
+GPIO Expander   & MCP23X17 (16 I/O)                             & I\textsuperscript{2}C & Buttons, AUX\_IO, buzzer \\
+PWM Servo Wing  & Adafruit 8-channel wing (PCA9685)             & I\textsuperscript{2}C & Fill valve servo \\
+Real-Time Clock & PCF8523                                       & I\textsuperscript{2}C & \\
+SD Card         & Standard SPI SD socket                        & SPI     & \\
+Buzzer          & Passive piezo via MCP23X17                    & GPIO    & \\
+Battery         & 3.7~V LiPo                                    & ---     & \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{MCP23X17 GPIO Expander Pin Map}
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Pin Name & Direction & Function \\
+\midrule
+Button A (local open)  & IN  & Locally command Fill valve open \\
+Button B (local close) & IN  & Locally command Fill valve closed \\
+Button C (status)      & IN  & Query Fill valve position \\
+\sig{AUX\_IO\_1} (CMD)    & IN  & Fill valve CMD from EMU \\
+\sig{AUX\_IO\_2} (STATUS) & OUT & Fill valve STATUS to EMU \\
+\sig{AUX\_IO\_3} (CMD)    & IN  & Umbilical release CMD (reserved) \\
+\sig{AUX\_IO\_4} (STATUS) & OUT & Umbilical release STATUS (reserved) \\
+Buzzer output & OUT & Audible alert \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Hardware Block Diagram}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[node distance=0.9cm and 1.8cm]
+  \node[mcublock, minimum width=3.0cm, minimum height=1.1cm] (mcu)
+    {Feather M0\\(ATSAMD21G18A)};
+  % I2C left
+  \node[hwblock, left=2.3cm of mcu, yshift= 2.4cm, minimum width=3.2cm] (oled) {SH1107 OLED};
+  \node[hwblock, left=2.3cm of mcu, yshift= 1.2cm, minimum width=3.2cm] (gpio) {MCP23X17\\GPIO Exp.};
+  \node[hwblock, left=2.3cm of mcu, yshift= 0.0cm, minimum width=3.2cm] (pwm)  {PCA9685\\Servo Wing};
+  \node[hwblock, left=2.3cm of mcu, yshift=-1.2cm, minimum width=3.2cm] (rtc)  {PCF8523 RTC};
+  % SPI right
+  \node[hwblock, right=2.3cm of mcu, yshift=0.6cm, minimum width=3.0cm] (sd)   {SD Card};
+  % GPIO expander outputs
+  \node[hwblock, below=1.5cm of mcu, xshift=-1.6cm, minimum width=2.6cm] (btn) {Panel Buttons};
+  \node[hwblock, below=1.5cm of mcu, xshift= 1.6cm, minimum width=2.6cm] (buz) {Buzzer};
+  % Power
+  \node[powerblock, below=3.0cm of mcu, minimum width=3.0cm] (bat) {LiPo Battery};
+  % I2C bus
+  \foreach \nd in {oled,gpio,pwm,rtc}
+    \draw[bidbusline] (mcu.west |- \nd) -- (\nd.east)
+      node[midway,above,font=\tiny]{I\textsuperscript{2}C};
+  % SPI
+  \draw[bidbusline] (mcu.east |- sd) -- (sd.west)
+    node[midway,above,font=\tiny]{SPI};
+  % GPIO expander → buttons and buzzer
+  \draw[busline] (gpio.south) -- ++(0,-0.4) -| (btn.north);
+  \draw[busline] (gpio.south) -- ++(0,-0.4) -| (buz.north);
+  % Power
+  \draw[busline,draw=KJOorange] (bat.north) -- ++(0,0.6) -| (mcu.south)
+    node[near end,right,font=\tiny]{3.7V};
+\end{tikzpicture}
+\caption{GSEMU hardware block diagram.}
+\end{figure}
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{Software Architecture}
+%═══════════════════════════════════════════════════════════════════════════════
+
+\subsection{Module Summary}
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Module & Location & Responsibility \\
+\midrule
+\sw{main.cpp}            & local  & Setup, loop, button handling \\
+\sw{KJO\_Valve}          & local  & Base valve: servo drive, pot feedback \\
+\sw{KJO\_Slave\_Valve}   & local  & CMD/STATUS GPIO handshake, local override \\
+\sw{KJO\_GPIO}           & local  & MCP23X17 pin assignments \\
+\sw{KJO\_GSE\_Display}   & local  & SH1107 OLED display, SD log helpers \\
+\sw{KJO\_Logging}        & local  & SD log file constants \\
+\sw{KJO\_System\_Config} & shared & Version, platform constants \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Class Hierarchy}
+
+\texttt{Valve} (base) $\longleftarrow$ \texttt{Slave\_Valve} (derived).
+
+The \sw{Valve} base class provides servo drive and potentiometer feedback.
+\sw{Slave\_Valve} adds edge-detection polling of \sig{AUX\_IO\_1} (CMD) and
+output driving of \sig{AUX\_IO\_2} (STATUS).
+
+\subsection{Main Loop Control Flow}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[node distance=0.55cm]
+  \node[flowterminal] (start)  {loop()};
+  \node[flowproc, below=of start]  (buz)   {Buzzer.update()};
+  \node[flowproc, below=of buz]    (fv)    {Fill\_Valve.update()\\(Slave\_Valve)};
+  \node[flowproc, below=of fv]     (btn)   {Check\_Buttons()};
+  \draw[flowarrow] (start)--(buz);
+  \draw[flowarrow] (buz)--(fv);
+  \draw[flowarrow] (fv)--(btn);
+  \draw[flowarrow] (btn.south) -- ++(0,-0.4) -- ++(3.5,0)
+    -- ++(0,4.1) -- (start.east);
+\end{tikzpicture}
+\caption{GSEMU main loop control flow.}
+\end{figure}
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{Fill Valve Control (\sw{Slave\_Valve})}
+%═══════════════════════════════════════════════════════════════════════════════
+
+\subsection{Slave\_Valve Operation}
+
+\sw{Slave\_Valve.update()} is called every loop iteration.  It performs
+edge detection on the CMD line (\sig{AUX\_IO\_1}) and responds as follows:
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+CMD transition & Slave\_Valve action & STATUS (\sig{AUX\_IO\_2}) \\
+\midrule
+LOW $\to$ HIGH (rising edge) & Drive servo to fully open  & Asserted HIGH when open \\
+HIGH $\to$ LOW (falling edge)& Drive servo to fully closed & Asserted HIGH when closed \\
+No change                   & Poll servo position         & Unchanged \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+STATUS is asserted as soon as the potentiometer confirms the valve has
+reached the commanded position (within dead-band).
+
+\subsection{Local Button Override}
+
+Three panel buttons on the MCP23X17 allow the GSEMU to control the Fill
+valve independently of the EMU, useful during ground testing:
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Button & Action \\
+\midrule
+A (Open)  & Drive Fill valve servo to fully open position \\
+B (Close) & Drive Fill valve servo to fully closed position \\
+C (Status)& Display current valve position (\%) on OLED \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{warningbox}
+Local button overrides bypass the EMU command authority.  Use for
+ground testing only.  During a fill or engine operation sequence, local
+overrides should not be used.
+\end{warningbox}
+
+\subsection{Handshake from GSEMU Perspective}
+
+The sequence from the GSEMU point of view:
+
+\begin{enumerate}[nosep]
+  \item Poll \sig{AUX\_IO\_1}: if rising edge detected, enter OPENING state.
+  \item Drive servo toward fully open; \sw{Valve::update()} monitors pot.
+  \item When \sw{isOpen()} returns true, assert \sig{AUX\_IO\_2} = HIGH.
+  \item Poll \sig{AUX\_IO\_1}: if falling edge detected, enter CLOSING state.
+  \item Drive servo to closed; assert \sig{AUX\_IO\_2} = HIGH when complete.
+  \item De-assert \sig{AUX\_IO\_2} after a brief confirmation hold.
+\end{enumerate}
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{OLED Display}
+%═══════════════════════════════════════════════════════════════════════════════
+
+The SH1107 OLED provides local status when no serial console is available.
+\sw{KJO\_GSE\_Display} provides:
+\begin{itemize}[nosep]
+  \item \sw{scrollMessage(msg)}: scrolls a text message across the display.
+  \item \sw{displayValveStatus(pct)}: shows the current valve open percentage.
+  \item \sw{displayLogEntry(msg)}: echoes SD log entries to the display.
+\end{itemize}
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{SD Logging}
+%═══════════════════════════════════════════════════════════════════════════════
+
+Log files are stored in \texttt{GSEMU\_Logs/Log\_N.txt}.  Each record is
+time-stamped (PCF8523) and logs CMD/STATUS transitions, servo position
+changes, button presses, and system events.
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{Version History}
+%═══════════════════════════════════════════════════════════════════════════════
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Version & Date & Notes \\
+\midrule
+0.1 & March 2026 & Initial release. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\end{document}

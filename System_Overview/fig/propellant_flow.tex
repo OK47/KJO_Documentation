@@ -1,0 +1,202 @@
+% propellant_flow.tex
+% Propellant system schematic for inclusion in KJO_System_Overview.tex.
+% \input this file inside a figure environment.
+% Requires: KJO_tikz_styles.tex already loaded.
+
+\begin{tikzpicture}[x=1cm, y=1cm]
+
+%────────────────────────────────────────────────────────────────────
+% Region boundaries
+%────────────────────────────────────────────────────────────────────
+% GSE boundary (dashed green)
+\draw[gseboundary] (-1.0, 6.2) rectangle (5.0, 13.8);
+\node[font=\footnotesize\bfseries, text=KJOgreen!60!black, anchor=north west]
+  at (-1.0, 13.8) {Ground Support Equipment (GSE)};
+
+% Rocket boundary (solid red/orange)
+\draw[rocketboundary] (-4.5, -9.2) rectangle (11.5, 6.0);
+\node[font=\footnotesize\bfseries, text=KJOred!60!black, anchor=south east]
+  at (11.5, 6.0) {Rocket / Flight Hardware};
+
+% Umbilical label
+\node[font=\footnotesize\itshape, text=KJOgray] at (2.0, 6.5)
+  {\textemdash\;\textit{Umbilical Interface}\;\textemdash};
+
+%────────────────────────────────────────────────────────────────────
+% GSE FILL PATH (left column, x=2)
+%────────────────────────────────────────────────────────────────────
+% N2O source tank
+\node[srctank, minimum height=2.2cm] (src)
+  at (2, 12.3) {N$_2$O\\Source\\Tank};
+
+% Fill Valve (GSEMU-controlled servo)
+\node[gseval, minimum width=2.4cm] (fillv)
+  at (2, 9.8) {Fill Valve};
+\node[font=\tiny, text=KJOgreen!70!black, above right=-1pt and 2pt of fillv]
+  {GSEMU servo};
+
+% QR Servo (GSEMU — umbilical release actuator)
+\node[gseval, minimum width=2.4cm] (qrservo)
+  at (2, 8.2) {QR Servo / Release};
+\node[font=\tiny, text=KJOgreen!70!black, above right=-1pt and 2pt of qrservo]
+  {GSEMU servo};
+
+% Pipes: source → fill valve → QR servo
+\draw[gsepipe] (src.south)    -- (fillv.north);
+\draw[gsepipe] (fillv.south)  -- (qrservo.north);
+% Arrow into rocket (downward through umbilical)
+\draw[gsepipearrow] (qrservo.south) -- (2, 6.8);
+
+%────────────────────────────────────────────────────────────────────
+% ROCKET FILL PATH continues
+%────────────────────────────────────────────────────────────────────
+% QR Receiver (rocket side of umbilical)
+\node[component] (qrrcvr) at (2, 5.5) {QR Receiver};
+
+% Backflow prevention (check valve)
+\node[component] (chkv)   at (2, 4.2) {Check Valve};
+
+% T-junction dot
+\coordinate (tjunc) at (2, 3.0);
+\fill (tjunc) circle (3pt);
+
+% Pipes: QR receiver → check valve → T-junction
+\draw[pipe] (2, 6.8)     -- (qrrcvr.north);
+\draw[pipe] (qrrcvr.south) -- (chkv.north);
+\draw[pipe] (chkv.south)   -- (tjunc);
+
+%────────────────────────────────────────────────────────────────────
+% DUMP BRANCH (horizontal, left of T-junction)
+%────────────────────────────────────────────────────────────────────
+\node[emuval, minimum width=2.2cm] (dumpv) at (-2.0, 3.0) {Dump Valve};
+\node[font=\tiny, text=KJOred, below=1pt of dumpv] {EMU servo};
+
+% Vent arrow
+\draw[-{Stealth[length=7pt,width=5pt]}, line width=2pt, draw=KJOgray!70]
+  (dumpv.west) -- +(-1.5, 0)
+  node[anchor=east, font=\footnotesize, text=KJOgray] {Vent};
+
+% Pipe: T-junction → dump valve
+\draw[pipe] (tjunc) -- (dumpv.east);
+
+%────────────────────────────────────────────────────────────────────
+% N2O OXIDIZER TANK (rocket)
+%────────────────────────────────────────────────────────────────────
+\node[n2otank, minimum height=2.8cm] (n2otank) at (2, 0.9) {N$_2$O\\Oxidizer\\Tank};
+
+% Pipe: T-junction → N2O tank
+\draw[pipe] (tjunc) -- (n2otank.north);
+
+% Pressure transducer on N2O tank
+\node[instrument] (pt1) at (4.8, 1.6) {PT};
+\draw[sensorlead] (n2otank.east |- pt1) -- (pt1.west);
+\node[font=\tiny, anchor=west, text=KJOgray] at (5.15, 1.6) {Tank Pressure};
+
+% Temperature transducer on N2O tank
+\node[instrument] (tt1) at (4.8, 0.3) {TT};
+\draw[sensorlead] (n2otank.east |- tt1) -- (tt1.west);
+\node[font=\tiny, anchor=west, text=KJOgray] at (5.15, 0.3) {Tank Temp};
+
+%────────────────────────────────────────────────────────────────────
+% PRESSURIZATION LINE (N2O vapor → Fuel Tank)
+%────────────────────────────────────────────────────────────────────
+% Horizontal dashed orange arrow from N2O tank to fuel tank at y=0.9
+\draw[presspipearrow]
+  (n2otank.east |- 0, 0.9) -- (6.2, 0.9)
+  node[midway, above, font=\tiny, text=KJOorange] {Autogenous Press.};
+
+%────────────────────────────────────────────────────────────────────
+% OX FEED PATH
+%────────────────────────────────────────────────────────────────────
+\node[emuval, minimum width=2.4cm] (oxv) at (2, -1.8) {Ox Feed Valve};
+\node[font=\tiny, text=KJOred, above right=-1pt and 2pt of oxv]
+  {EMU servo, proportional};
+
+\draw[oxpipe] (n2otank.south) -- (oxv.north);
+% Arrow into chamber inlet
+\draw[oxpipearrow] (oxv.south) -- (2, -4.8);
+
+%────────────────────────────────────────────────────────────────────
+% FUEL TANK AND FUEL PATH (right column, x=8)
+%────────────────────────────────────────────────────────────────────
+\node[fueltank, minimum height=2.2cm] (fueltank) at (8, 0.9) {Fuel\\Tank};
+
+% Pressurization line arrives from N2O tank
+\draw[presspipe] (6.2, 0.9) -- (fueltank.west);
+
+% Fuel Feed Valve
+\node[emuval, minimum width=2.4cm] (fuelv) at (8, -1.8) {Fuel Feed Valve};
+\node[font=\tiny, text=KJOred, above right=-1pt and 2pt of fuelv]
+  {EMU servo, proportional};
+
+% Regenerative Cooling Jacket
+\node[component, minimum width=2.6cm] (jacket) at (8, -3.4) {Regen.\ Cooling Jacket};
+
+% Injector Plate
+\node[component, minimum width=2.6cm] (injplate) at (8, -4.8) {Injector Plate\\(Fuel Injectors)};
+
+% Fuel path pipes
+\draw[fuelpipe] (fueltank.south) -- (fuelv.north);
+\draw[fuelpipe] (fuelv.south)    -- (jacket.north);
+\draw[fuelpipe] (jacket.south)   -- (injplate.north);
+\draw[fuelpipearrow] (injplate.south) -- (8, -6.0);
+
+%────────────────────────────────────────────────────────────────────
+% COMBUSTION CHAMBER
+%────────────────────────────────────────────────────────────────────
+\node[rectangle, draw=black, line width=2pt, fill=yellow!10,
+      minimum width=9.0cm, minimum height=1.3cm,
+      font=\normalsize\bfseries, align=center]
+  (chamber) at (5.0, -6.65) {Combustion Chamber};
+
+% Ox enters from top-left
+\draw[oxpipearrow] (2, -4.8) -- (2, -6.0);
+
+% Fuel/injector enters from top-right
+\draw[fuelpipearrow] (8, -6.0) -- (8, -6.0 |- chamber.north);
+
+% Chamber pressure transducer
+\node[instrument] (pt2) at (10.8, -6.65) {PT};
+\draw[sensorlead] (chamber.east) -- (pt2.west);
+\node[font=\tiny, anchor=west, text=KJOgray] at (11.15, -6.65) {Chamber\\Pressure};
+
+% Thermocouple(s) on chamber wall
+\node[instrument] (tc1) at (3.5, -5.85) {TC};
+\draw[sensorlead] (tc1.south) -- (3.5, -6.0 |- chamber.north);
+\node[font=\tiny, anchor=south, text=KJOgray] at (3.5, -5.55) {TC1};
+
+\node[instrument] (tc2) at (6.5, -5.85) {TC};
+\draw[sensorlead] (tc2.south) -- (6.5, -6.0 |- chamber.north);
+\node[font=\tiny, anchor=south, text=KJOgray] at (6.5, -5.55) {TC2};
+
+%────────────────────────────────────────────────────────────────────
+% NOZZLE
+%────────────────────────────────────────────────────────────────────
+% Nozzle drawn as a trapezoid: wide at top (chamber exit), narrow at throat
+\draw[line width=2pt]
+  (3.0, -7.3) -- (2.5, -9.0)
+  (7.0, -7.3) -- (7.5, -9.0)
+  (2.5, -9.0) -- (7.5, -9.0);
+\draw[line width=1.5pt] (3.0, -7.3) -- (7.0, -7.3);
+\node[font=\small\itshape] at (5.0, -8.2) {Nozzle};
+
+% Exhaust arrow
+\draw[-{Stealth[length=9pt,width=6pt]}, line width=3pt, draw=KJOgray!60]
+  (5.0, -9.0) -- (5.0, -9.8)
+  node[anchor=north, font=\footnotesize, text=KJOgray] {Exhaust};
+
+%────────────────────────────────────────────────────────────────────
+% LEGEND
+%────────────────────────────────────────────────────────────────────
+\begin{scope}[xshift=-4.2cm, yshift=-7.5cm]
+  \draw[gsepipe, line width=1.5pt] (0, 0) -- (0.9, 0);
+  \node[anchor=west, font=\tiny] at (0.95, 0) {N$_2$O Fill (GSE)};
+  \draw[oxpipe,  line width=1.5pt] (0, -0.4) -- (0.9, -0.4);
+  \node[anchor=west, font=\tiny] at (0.95, -0.4) {Oxidizer (N$_2$O)};
+  \draw[fuelpipe, line width=1.5pt] (0, -0.8) -- (0.9, -0.8);
+  \node[anchor=west, font=\tiny] at (0.95, -0.8) {Fuel};
+  \draw[presspipe, line width=1.2pt] (0, -1.2) -- (0.9, -1.2);
+  \node[anchor=west, font=\tiny] at (0.95, -1.2) {Pressurization};
+\end{scope}
+
+\end{tikzpicture}

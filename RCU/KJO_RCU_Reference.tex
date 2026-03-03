@@ -1,0 +1,229 @@
+\documentclass[11pt,letterpaper]{article}
+\input{../shared/KJO_preamble}
+\newcommand{\docversion}{0.1}
+\newcommand{\docdate}{March 2026}
+\lhead{\textsc{KJO Remote Control Unit}}
+\rhead{\textsc{RCU Reference} --- v\docversion}
+\cfoot{\thepage\ of \pageref{LastPage}}
+\hypersetup{pdftitle={KJO RCU Reference}, pdfauthor={Ken Overton}}
+
+\begin{document}
+\input{../shared/KJO_tikz_styles}
+
+\KJOtitlepage%
+  {Remote Control Unit (RCU)}%
+  {Hardware and Software Reference}%
+  {\docversion}{\docdate}%
+  {This document describes the hardware, software architecture, operator
+   interface, and control flow of the Remote Control Unit.  The RCU is the
+   sole operator interface to the KJO liquid rocket motor control system.}
+
+\tableofcontents\newpage
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{Hardware Overview}
+%═══════════════════════════════════════════════════════════════════════════════
+
+\subsection{Component Summary}
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Component & Part & Interface \\
+\midrule
+Microcontroller  & Adafruit Feather M0 (ATSAMD21G18A, 48~MHz)   & --- \\
+Display          & Adafruit 3.5\textquotedbl\ TFT V2 (HX8357D, 480$\times$320) & SPI \\
+Touchscreen      & TSC2007 resistive controller                  & I\textsuperscript{2}C (0x48) \\
+LoRa Radio       & HopeRF RFM95W (Semtech SX1276), 915~MHz       & SPI \\
+Real-Time Clock  & DS3231 (provides temperature also)            & I\textsuperscript{2}C \\
+SD Card          & On Adafruit 3.5\textquotedbl\ TFT shield       & SPI \\
+Battery          & 3.7~V LiPo; voltage divider on A7             & ADC A7 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Pin Assignments}
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Signal & Pin & Notes \\
+\midrule
+\sig{SCREEN\_CS}  & 11  & TFT chip select \\
+\sig{SCREEN\_DC}  & 10  & TFT data/command \\
+\sig{SD\_CS}      &  5  & SD card chip select \\
+\sig{STMPE\_CS}   &  6  & Touch controller CS (also TOUCH\_IRQ) \\
+\sig{RFM95\_CS}   &  8  & Radio chip select \\
+\sig{RFM95\_RST}  &  4  & Radio reset \\
+\sig{RFM95\_INT}  &  3  & Radio IRQ \\
+\sig{BAT\_SENSE}  & A7  & Battery voltage (2:1 divider) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Hardware Block Diagram}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[node distance=1.1cm and 1.5cm]
+  \node[mcublock, minimum width=3.2cm, minimum height=1.2cm] (mcu)
+    {Feather M0\\(ATSAMD21G18A)};
+  % SPI peripherals (right)
+  \node[hwblock, right=2.2cm of mcu, yshift=2.2cm]  (tft)  {HX8357D TFT\\480$\times$320};
+  \node[hwblock, right=2.2cm of mcu, yshift=0.8cm]  (sd)   {SD Card};
+  \node[hwblock, right=2.2cm of mcu, yshift=-0.6cm] (rf)   {RFM95W LoRa};
+  % I2C peripherals (left)
+  \node[hwblock, left=2.0cm of mcu, yshift=0.8cm]   (rtc)  {DS3231 RTC};
+  \node[hwblock, left=2.0cm of mcu, yshift=-0.4cm]  (touch){TSC2007\\Touch};
+  % Power (below)
+  \node[powerblock, below=1.3cm of mcu, minimum width=3.0cm] (bat) {LiPo Battery};
+  % SPI bus
+  \draw[bidbusline] (mcu.east |- tft) -- (tft.west)
+    node[midway,above,font=\tiny]{SPI};
+  \draw[bidbusline] (mcu.east |- sd)  -- (sd.west)
+    node[midway,above,font=\tiny]{SPI};
+  \draw[bidbusline] (mcu.east |- rf)  -- (rf.west)
+    node[midway,below,font=\tiny]{SPI};
+  % I2C bus
+  \draw[bidbusline] (mcu.west |- rtc)   -- (rtc.east)
+    node[midway,above,font=\tiny]{I\textsuperscript{2}C};
+  \draw[bidbusline] (mcu.west |- touch) -- (touch.east)
+    node[midway,below,font=\tiny]{I\textsuperscript{2}C};
+  % Power
+  \draw[busline, draw=KJOorange] (bat.north) -- (mcu.south)
+    node[midway,right,font=\tiny]{3.7V};
+\end{tikzpicture}
+\caption{RCU hardware block diagram.}
+\end{figure}
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{Software Architecture}
+%═══════════════════════════════════════════════════════════════════════════════
+
+\subsection{Module Summary}
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Module & Location & Responsibility \\
+\midrule
+\sw{main.cpp}          & local  & Setup, loop, command dispatch, GUI logic \\
+\sw{KJO\_RCU\_Display} & shared & TFT GUI: buttons, valve symbols, panels \\
+\sw{KJO\_Radio}        & shared & Radio pin constants, frequency, power \\
+\sw{KJO\_Command\_Defs}& shared & Command codes, packet struct definitions \\
+\sw{KJO\_System\_Config}&shared & Version string, platform identifier \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Main Loop Control Flow}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[node distance=0.55cm]
+  \node[flowterminal] (start) {loop()};
+  \node[flowproc, below=of start]  (rx)  {Check\_and\_Process\\\_Receive\_Packet()};
+  \node[flowproc, below=of rx]     (hb)  {Check\_Act\_Heartbeat()};
+  \node[flowproc, below=of hb]     (los) {Check\_For\_LOS()};
+  \node[flowproc, below=of los]    (vlt) {Check\_Update\_Volts\\\_Link\_Time\_Temp()};
+  \node[flowproc, below=of vlt]    (btn) {Check\_Act\_Button\_Press()};
+  \node[flowproc, below=of btn]    (clr) {Check\_Clear\_Buttons()};
+  \draw[flowarrow] (start)--(rx);
+  \draw[flowarrow] (rx)--(hb);
+  \draw[flowarrow] (hb)--(los);
+  \draw[flowarrow] (los)--(vlt);
+  \draw[flowarrow] (vlt)--(btn);
+  \draw[flowarrow] (btn)--(clr);
+  % Loop back
+  \draw[flowarrow] (clr.south) -- ++(0,-0.4) -- ++(3.5,0)
+    -- ++(0, 7.5) -- (start.east);
+\end{tikzpicture}
+\caption{RCU main loop control flow.}
+\end{figure}
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{Operator Interface (GUI)}
+%═══════════════════════════════════════════════════════════════════════════════
+
+\subsection{Button Layout}
+
+Six buttons are arranged in a 2$\times$3 grid on the left side of the screen:
+
+\begin{center}
+\begin{tabular}{@{}llll@{}}
+\toprule
+Button & Row & Col & Command Sent \\
+\midrule
+Fill   & 1 & 1 & \cmd{BEGIN\_FILL} \\
+Dump   & 1 & 2 & \cmd{DUMP} (latching toggle; second press $\to$ \cmd{STOP\_DUMP}) \\
+Reset  & 2 & 1 & \cmd{RESET} \\
+Status & 2 & 2 & \cmd{RCU\_STATUS} \\
+Enable & 3 & 1 & \cmd{ENABLE\_LCO\_CONTROL} \\
+Launch & 3 & 2 & \cmd{START\_ENGINE} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+All buttons highlight on press and auto-clear after 1~second.
+The \textbf{Dump} button is an exception: it remains highlighted until a second
+press is detected (latching behaviour), confirming the dump is active.
+
+\subsection{Valve Status Indicators}
+
+Four valve symbols occupy the right portion of the screen:
+Fill, N\textsubscript{2}O (Ox), Fuel, and Dump.
+Each symbol uses a circle-and-bar motif: a vertical bar on a green disc
+indicates open; a horizontal bar on a red disc indicates closed.
+State is updated from the \cmd{HEARTBEAT} response packet.
+
+\subsection{Status Panels}
+
+\begin{itemize}[nosep]
+  \item \textbf{Battery voltages}: RCU voltage (measured locally on A7);
+        EMU voltage (received in heartbeat).
+  \item \textbf{Link status}: LINK\_OK / LINK\_MARGINAL / LINK\_DOWN, with
+        current RSSI value.
+  \item \textbf{Time and temperature}: Time from DS3231; temperature
+        converted to \textdegree F.
+  \item \textbf{Message log}: Scrolling text panel showing last TX/RX events.
+\end{itemize}
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{Radio Command Dispatch}
+%═══════════════════════════════════════════════════════════════════════════════
+
+\sw{RCU\_Execute\_Command(command\_ID, p1)} builds and transmits a command
+packet.  \cmd{HEARTBEAT} uses the \texttt{Heartbeat\_Command\_Packet} structure
+(6~bytes, includes RCU voltage); all other commands use \texttt{Command\_Payload}
+(4~bytes, includes a \texttt{short} parameter).
+
+Responses are parsed in \sw{Check\_and\_Process\_Receive\_Packet()}.
+The \cmd{HEARTBEAT} response is routed to \sw{Process\_Heartbeat\_Response()},
+which updates EMU voltage and all four valve symbols.
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{SD Logging}
+%═══════════════════════════════════════════════════════════════════════════════
+
+Log files are stored in \texttt{RCU\_Logs/Log\_N.txt} (N incremented to avoid
+overwriting existing logs).  Each entry is time-stamped from the DS3231 and
+records all TX and RX events in human-readable form, e.g.:
+\begin{lstlisting}[language={},numbers=none]
+10:15:03 [TX] BEGIN_FILL (1) | param: 0
+10:15:03 [RX] BEGIN_FILL (1) | status: OK | r_val: 0 | RSSI: -72
+\end{lstlisting}
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{Version History}
+%═══════════════════════════════════════════════════════════════════════════════
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Version & Date & Notes \\
+\midrule
+0.1 & March 2026 & Initial release. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\end{document}

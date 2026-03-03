@@ -1,0 +1,193 @@
+% KJO_tikz_styles.tex
+% Shared TikZ node and edge styles for all KJO block diagrams.
+% \input this file inside the document body before any tikzpicture environments.
+
+\tikzset{
+  % ── Hardware block (peripheral chip / PCB component) ──────────────────────
+  hwblock/.style={
+    rectangle, draw=KJOgray, line width=1pt,
+    fill=KJOgray!10, rounded corners=4pt,
+    minimum width=2.6cm, minimum height=0.8cm,
+    font=\small, align=center, inner sep=4pt,
+  },
+  % Sub-variant: MCU (larger, blue border)
+  mcublock/.style={
+    hwblock,
+    draw=KJOblue, fill=KJOblue!8,
+    minimum width=3.0cm, minimum height=1.0cm,
+    font=\small\bfseries,
+  },
+  % Sub-variant: power / battery
+  powerblock/.style={
+    hwblock,
+    draw=KJOorange, fill=KJOorange!8,
+  },
+  % ── Software module box ────────────────────────────────────────────────────
+  swmodule/.style={
+    rectangle, draw=KJOblue, line width=0.8pt,
+    fill=KJOblue!6, rounded corners=3pt,
+    minimum width=2.8cm, minimum height=0.7cm,
+    font=\small, align=center, inner sep=3pt,
+  },
+  % Sub-variant: shared library
+  sharedlib/.style={
+    swmodule,
+    draw=KJOpurple, fill=KJOpurple!6,
+    dashed,
+  },
+  % ── Bus / link annotation ──────────────────────────────────────────────────
+  busline/.style={
+    draw=KJOgray, line width=1.5pt,
+    -{Stealth[length=6pt,width=4pt]},
+  },
+  bidbusline/.style={
+    draw=KJOgray, line width=1.5pt,
+    {Stealth[length=6pt,width=4pt]}-{Stealth[length=6pt,width=4pt]},
+  },
+  radioline/.style={
+    draw=KJOblue!60, line width=1.5pt, dashed,
+    {Stealth[length=6pt,width=4pt]}-{Stealth[length=6pt,width=4pt]},
+  },
+  gpioline/.style={
+    draw=KJOgreen!60!black, line width=1.2pt,
+    -{Stealth[length=5pt,width=4pt]},
+  },
+  % ── Flowchart shapes ──────────────────────────────────────────────────────
+  flowproc/.style={
+    rectangle, draw=KJOblue!70, line width=0.8pt,
+    fill=KJOblue!8, rounded corners=3pt,
+    minimum width=3.2cm, minimum height=0.7cm,
+    font=\small, align=center, inner sep=3pt,
+  },
+  flowdec/.style={
+    diamond, draw=KJOorange, line width=0.8pt,
+    fill=KJOorange!8,
+    minimum width=2.2cm, minimum height=0.9cm,
+    font=\small, align=center, inner sep=1pt,
+  },
+  flowterminal/.style={
+    rounded rectangle, draw=KJOblue, line width=1pt,
+    fill=KJOblue!12,
+    minimum width=2.8cm, minimum height=0.7cm,
+    font=\small\bfseries, align=center, inner sep=3pt,
+  },
+  flowarrow/.style={
+    draw=KJOgray, line width=0.9pt,
+    -{Stealth[length=5pt,width=4pt]},
+  },
+  % ── Propellant schematic styles ────────────────────────────────────────────
+  % Generic pipe line
+  pipe/.style={
+    draw=black, line width=1.8pt,
+  },
+  pipearrow/.style={
+    pipe,
+    -{Stealth[length=7pt,width=5pt]},
+  },
+  % Oxidizer (N2O) — blue
+  oxpipe/.style={
+    draw=KJOblue, line width=1.8pt,
+  },
+  oxpipearrow/.style={
+    oxpipe,
+    -{Stealth[length=7pt,width=5pt]},
+  },
+  % Fuel — red
+  fuelpipe/.style={
+    draw=KJOred, line width=1.8pt,
+  },
+  fuelpipearrow/.style={
+    fuelpipe,
+    -{Stealth[length=7pt,width=5pt]},
+  },
+  % GSE fill line — green
+  gsepipe/.style={
+    draw=KJOgreen!70!black, line width=1.8pt,
+  },
+  gsepipearrow/.style={
+    gsepipe,
+    -{Stealth[length=7pt,width=5pt]},
+  },
+  % Pressurization — orange dashed
+  presspipe/.style={
+    draw=KJOorange, line width=1.4pt, dashed,
+  },
+  presspipearrow/.style={
+    presspipe,
+    -{Stealth[length=6pt,width=4pt]},
+  },
+  % Tank (tall rectangle, rounded corners)
+  tank/.style={
+    rectangle, draw=black, line width=1.5pt,
+    rounded corners=4pt, fill=white,
+    minimum width=1.8cm, minimum height=2.4cm,
+    font=\small\bfseries, align=center, inner sep=4pt,
+  },
+  n2otank/.style={
+    tank, draw=KJOblue, fill=KJOblue!8,
+  },
+  fueltank/.style={
+    tank, draw=KJOred, fill=KJOred!8,
+  },
+  srctank/.style={
+    tank, draw=KJOgreen!70!black, fill=KJOgreen!6,
+  },
+  % Valve box (servo-actuated)
+  valvebox/.style={
+    rectangle, draw=black, line width=1pt,
+    fill=white, minimum width=2.2cm, minimum height=0.65cm,
+    font=\footnotesize\bfseries, align=center, inner sep=3pt,
+  },
+  gseval/.style={
+    valvebox, draw=KJOgreen!70!black, fill=KJOgreen!8,
+  },
+  emuval/.style={
+    valvebox, draw=KJOred, fill=KJOred!6,
+  },
+  % Component (generic inline component)
+  component/.style={
+    rectangle, draw=KJOgray, line width=0.8pt,
+    fill=white!96!gray, minimum width=2.2cm, minimum height=0.6cm,
+    font=\footnotesize, align=center, inner sep=3pt,
+  },
+  % Instrument callout circle (PT, TT, TC)
+  instrument/.style={
+    circle, draw=KJOgray, line width=0.8pt,
+    fill=white, minimum size=0.6cm,
+    font=\tiny\bfseries, align=center, inner sep=0pt,
+  },
+  % Sensor lead line
+  sensorlead/.style={
+    draw=KJOgray, line width=0.7pt,
+  },
+  % Boundary box (dashed outline for GSE / Rocket regions)
+  gseboundary/.style={
+    draw=KJOgreen!50, line width=1pt, dashed,
+    rounded corners=6pt,
+  },
+  rocketboundary/.style={
+    draw=KJOred!40, line width=1pt,
+    rounded corners=6pt,
+  },
+  % Sequence diagram lifeline
+  lifeline/.style={
+    draw=KJOgray, line width=0.6pt, dashed,
+  },
+  % Sequence diagram message arrow
+  seqarrow/.style={
+    draw=KJOblue, line width=0.9pt,
+    -{Stealth[length=5pt,width=4pt]},
+  },
+  % State node (FSM)
+  statenode/.style={
+    circle, draw=KJOblue, line width=1pt,
+    fill=KJOblue!10,
+    minimum size=1.2cm,
+    font=\small\bfseries, align=center,
+  },
+  statetransition/.style={
+    draw=KJOgray, line width=0.9pt,
+    -{Stealth[length=5pt,width=4pt]},
+    font=\footnotesize,
+  },
+}

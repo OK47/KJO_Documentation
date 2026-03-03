@@ -1,0 +1,296 @@
+\documentclass[11pt,letterpaper]{article}
+\input{../shared/KJO_preamble}
+\newcommand{\docversion}{0.1}
+\newcommand{\docdate}{March 2026}
+\lhead{\textsc{KJO Engine Management Unit}}
+\rhead{\textsc{EMU Reference} --- v\docversion}
+\cfoot{\thepage\ of \pageref{LastPage}}
+\hypersetup{pdftitle={KJO EMU Reference}, pdfauthor={Ken Overton}}
+
+\begin{document}
+\input{../shared/KJO_tikz_styles}
+
+\KJOtitlepage%
+  {Engine Management Unit (EMU)}%
+  {Hardware and Software Reference}%
+  {\docversion}{\docdate}%
+  {This document describes the hardware, software architecture, valve control
+   system, Fill valve handshake protocol, sensor subsystems, and control flow
+   of the Engine Management Unit.  The EMU is mounted inside the rocket and
+   is the primary actuator and sensor node of the KJO system.}
+
+\tableofcontents\newpage
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{Hardware Overview}
+%═══════════════════════════════════════════════════════════════════════════════
+
+\subsection{Component Summary}
+
+\begin{center}
+\begin{tabular}{@{}llll@{}}
+\toprule
+Component & Part & Interface & Notes \\
+\midrule
+Microcontroller   & Adafruit Feather M0 (ATSAMD21G18A, 48~MHz)  & ---     & \\
+OLED Display      & SH1107, 128$\times$64, 1.12\textquotedbl      & I\textsuperscript{2}C & \\
+GPIO Expander     & MCP23X17 (16 I/O)                            & I\textsuperscript{2}C & Relays, buttons, AUX\_IO \\
+PWM Servo Wing    & Adafruit 8-channel wing (PCA9685)            & I\textsuperscript{2}C & Ox, Fuel, Dump servos \\
+ADC               & ADS1015 (12-bit, 4-ch)                       & I\textsuperscript{2}C & Pressure transducers \\
+Thermocouple IF   & MAX31856 (2$\times$)                         & SPI     & TC1, TC2 \\
+Real-Time Clock   & PCF8523                                      & I\textsuperscript{2}C & \\
+LoRa Radio        & HopeRF RFM95W (Semtech SX1276), 915~MHz      & SPI     & \\
+SD Card           & Standard SPI SD socket                       & SPI     & \\
+NeoPixel          & WS2812B (1$\times$)                          & GPIO    & Status indicator \\
+Igniter Relay     & SPDT relay via MCP23X17                      & GPIO    & \\
+Buzzer            & Passive piezo                                & PWM     & \\
+Battery           & 3.7~V LiPo; voltage divider on ADC           & ADC     & \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{MCP23X17 GPIO Expander Pin Map}
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Pin Name & Direction & Function \\
+\midrule
+Relay outputs (4$\times$) & OUT & Igniter relay and auxiliary relays \\
+Button inputs (4$\times$) & IN  & Local panel buttons \\
+\sig{AUX\_IO\_1}     & OUT & Fill valve CMD line (to GSEMU) \\
+\sig{AUX\_IO\_2}     & IN  & Fill valve STATUS line (from GSEMU) \\
+\sig{AUX\_IO\_3}     & OUT & Umbilical release CMD (reserved) \\
+\sig{AUX\_IO\_4}     & IN  & Umbilical release STATUS (reserved) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Hardware Block Diagram}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[node distance=0.9cm and 1.8cm]
+  \node[mcublock, minimum width=3.0cm, minimum height=1.1cm] (mcu)
+    {Feather M0\\(ATSAMD21G18A)};
+  % I2C left
+  \node[hwblock, left=2.3cm of mcu, yshift= 3.2cm, minimum width=3.2cm] (oled) {SH1107 OLED};
+  \node[hwblock, left=2.3cm of mcu, yshift= 2.0cm, minimum width=3.2cm] (gpio) {MCP23X17\\GPIO Exp.};
+  \node[hwblock, left=2.3cm of mcu, yshift= 0.8cm, minimum width=3.2cm] (pwm)  {PCA9685\\Servo Wing};
+  \node[hwblock, left=2.3cm of mcu, yshift=-0.4cm, minimum width=3.2cm] (adc)  {ADS1015 ADC};
+  \node[hwblock, left=2.3cm of mcu, yshift=-1.6cm, minimum width=3.2cm] (rtc)  {PCF8523 RTC};
+  % SPI right
+  \node[hwblock, right=2.3cm of mcu, yshift= 2.0cm, minimum width=3.0cm] (rf)  {RFM95W LoRa};
+  \node[hwblock, right=2.3cm of mcu, yshift= 0.8cm, minimum width=3.0cm] (tc1) {MAX31856 TC×2};
+  \node[hwblock, right=2.3cm of mcu, yshift=-0.4cm, minimum width=3.0cm] (sd)  {SD Card};
+  % GPIO below
+  \node[hwblock, below=1.5cm of mcu, xshift=-1.8cm, minimum width=2.8cm] (neo) {NeoPixel};
+  \node[hwblock, below=1.5cm of mcu, xshift= 1.8cm, minimum width=2.8cm] (buz) {Buzzer};
+  % Power
+  \node[powerblock, below=3.0cm of mcu, minimum width=3.0cm] (bat) {LiPo Battery};
+  % I2C bus (left)
+  \foreach \nd in {oled,gpio,pwm,adc,rtc}
+    \draw[bidbusline] (mcu.west |- \nd) -- (\nd.east)
+      node[midway,above,font=\tiny]{I\textsuperscript{2}C};
+  % SPI bus (right)
+  \foreach \nd in {rf,tc1,sd}
+    \draw[bidbusline] (mcu.east |- \nd) -- (\nd.west)
+      node[midway,above,font=\tiny]{SPI};
+  % GPIO
+  \draw[busline] (mcu.south -| neo) -- (neo.north);
+  \draw[busline] (mcu.south -| buz) -- (buz.north);
+  % Power
+  \draw[busline,draw=KJOorange] (bat.north) -- ++(0,0.6) -| (mcu.south)
+    node[near end,right,font=\tiny]{3.7V};
+\end{tikzpicture}
+\caption{EMU hardware block diagram.}
+\end{figure}
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{Software Architecture}
+%═══════════════════════════════════════════════════════════════════════════════
+
+\subsection{Module Summary}
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Module & Location & Responsibility \\
+\midrule
+\sw{main.cpp}              & local  & Setup, loop, command dispatch \\
+\sw{KJO\_Valve}            & local  & Base valve: servo drive, pot feedback \\
+\sw{KJO\_Master\_Valve}    & local  & Fill valve CMd/STATUS GPIO handshake \\
+\sw{KJO\_Control\_System}  & local  & \sw{Execute\_Command()} routing table \\
+\sw{KJO\_Pressure}         & local  & Pressure transducer read / convert \\
+\sw{KJO\_Temperature}      & local  & Analog temperature transducer \\
+\sw{KJO\_Thermocouple}     & local  & MAX31856 thermocouple read \\
+\sw{KJO\_Analog}           & local  & ADS1015 ADC wrapper \\
+\sw{KJO\_GPIO}             & local  & MCP23X17 pin definitions, Relay class \\
+\sw{KJO\_EMU\_Display}     & local  & SH1107 OLED display functions \\
+\sw{KJO\_Indicator}        & local  & NeoPixel status indicator \\
+\sw{KJO\_Logging}          & local  & SD log file constants \\
+\sw{KJO\_Radio}            & shared & Radio pin constants, frequency \\
+\sw{KJO\_Command\_Defs}    & shared & Command codes, packet structures \\
+\sw{KJO\_System\_Config}   & shared & Version, platform constants \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Main Loop Control Flow}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[node distance=0.55cm]
+  \node[flowterminal] (start)  {loop()};
+  \node[flowproc, below=of start]  (btn)  {Check\_Buttons()};
+  \node[flowproc, below=of btn]    (vchk) {Check\_Valve\_Move()};
+  \node[flowproc, below=of vchk]   (rx)   {Check\_Radio()};
+  \draw[flowarrow] (start)--(btn);
+  \draw[flowarrow] (btn)--(vchk);
+  \draw[flowarrow] (vchk)--(rx);
+  \draw[flowarrow] (rx.south) -- ++(0,-0.4) -- ++(3.5,0)
+    -- ++(0,4.5) -- (start.east);
+\end{tikzpicture}
+\caption{EMU main loop control flow.}
+\end{figure}
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{Valve Control Subsystem}
+%═══════════════════════════════════════════════════════════════════════════════
+
+\subsection{Valve Base Class (\sw{KJO\_Valve})}
+
+The \sw{Valve} class encapsulates a servo-driven, potentiometer-feedback valve:
+
+\begin{itemize}[nosep]
+  \item \textbf{Drive}: PWM signal to PCA9685 servo wing channel.
+  \item \textbf{Feedback}: Potentiometer on ADS1015 ADC channel; position
+        expressed as 0--100\% open.
+  \item \textbf{Position control}: \sw{openTo(\%)} sets target; \sw{update()}
+        drives servo until pot reading reaches target within dead-band.
+  \item \textbf{State queries}: \sw{isMoving()}, \sw{isStopped()},
+        \sw{isOpen()}, \sw{isClosed()}.
+\end{itemize}
+
+\subsection{Deferred Valve State Machine}
+
+Valve movements are not blocking.  \sw{Check\_Valve\_Move()} is called every
+loop iteration and monitors the active valve:
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[node distance=2.5cm]
+  \node[statenode] (idle)   {IDLE};
+  \node[statenode, right=of idle] (moving) {MOVING};
+  \draw[statetransition, bend left=20]
+    (idle) edge node[above, font=\tiny, align=center]
+      {valve command\\received}
+    (moving);
+  \draw[statetransition, bend left=20]
+    (moving) edge node[below, font=\tiny, align=center]
+      {pos. reached\\or timeout}
+    (idle);
+  \draw[statetransition, loop above, looseness=5]
+    (moving) edge node[above, font=\tiny] {still moving} (moving);
+\end{tikzpicture}
+\caption{Deferred valve state machine.}
+\end{figure}
+
+A watchdog timer prevents the system from remaining in MOVING indefinitely
+if the servo stalls or the potentiometer fails.
+
+\subsection{Master\_Valve Class (\sw{KJO\_Master\_Valve})}
+
+\sw{Master\_Valve} extends \sw{Valve} with the CMD/STATUS GPIO handshake for
+the Fill valve.  On \sw{open()} or \sw{close()}, the class asserts
+\sig{AUX\_IO\_1} (CMD) and then polls \sig{AUX\_IO\_2} (STATUS) to confirm that
+the GSEMU has completed the commanded movement.  The GSEMU drives the servo;
+the EMU's \sw{Valve} base class is not used for Fill valve servo drive.
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{Fill Valve Handshake Protocol}
+%═══════════════════════════════════════════════════════════════════════════════
+
+The Fill valve servo and potentiometer reside on the GSEMU.
+The EMU and GSEMU exchange state using two GPIO lines:
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Signal & Driver & Meaning when HIGH \\
+\midrule
+\sig{AUX\_IO\_1} (CMD)    & EMU   & Fill valve commanded open \\
+\sig{AUX\_IO\_2} (STATUS) & GSEMU & Fill valve has reached commanded position \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Open sequence:}
+\begin{enumerate}[nosep]
+  \item EMU calls \sw{Fill\_Valve.open()}.
+  \item \sw{Master\_Valve} asserts CMD = HIGH.
+  \item GSEMU \sw{Slave\_Valve.update()} detects CMD rising edge; drives servo to open.
+  \item GSEMU asserts STATUS = HIGH when servo reaches open position.
+  \item EMU reads STATUS = HIGH; reports completion.
+\end{enumerate}
+
+\textbf{Close sequence}: CMD de-asserted (LOW); GSEMU closes servo; STATUS driven LOW.
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{Command Dispatch (\sw{Execute\_Command})}
+%═══════════════════════════════════════════════════════════════════════════════
+
+\sw{Check\_Radio()} receives and parses packets from the RCU.
+\cmd{HEARTBEAT} is handled directly and a \texttt{Heartbeat\_Response\_Packet}
+is returned immediately, containing EMU voltage and current servo positions.
+All other commands are dispatched through \sw{Execute\_Command(command\_ID, param)},
+which implements a \texttt{switch} on command code.  Commands with deferred
+completion (e.g., \cmd{DUMP}, \cmd{BEGIN\_FILL}) put the valve state machine
+into MOVING state; the acknowledgement is sent when the movement completes in
+\sw{Check\_Valve\_Move()}.
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{Sensor Subsystems}
+%═══════════════════════════════════════════════════════════════════════════════
+
+\begin{center}
+\begin{tabular}{@{}llll@{}}
+\toprule
+Sensor & Class & ADC / Bus & Measurement \\
+\midrule
+Tank pressure transducer   & \sw{Pressure\_Transducer}   & ADS1015 ch0 & N\textsubscript{2}O tank pressure \\
+Chamber pressure transducer& \sw{Pressure\_Transducer}   & ADS1015 ch1 & Combustion chamber pressure \\
+Tank temperature sensor    & \sw{Temperature\_Transducer}& ADS1015 ch2 & N\textsubscript{2}O tank temperature \\
+Chamber temperature sensor & \sw{Temperature\_Transducer}& ADS1015 ch3 & Chamber wall temperature \\
+Thermocouple 1             & \sw{MAX31856}               & SPI         & TC1 (TBD location) \\
+Thermocouple 2             & \sw{MAX31856}               & SPI         & TC2 (TBD location) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+All sensor reads are non-blocking; results are returned in
+\texttt{Command\_Return\_Packet.r\_val} in response to the corresponding
+\cmd{READ\_*} commands.
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{SD Logging}
+%═══════════════════════════════════════════════════════════════════════════════
+
+Log files are stored in \texttt{EMU\_Logs/Log\_N.txt}.  Each record is
+time-stamped (PCF8523) and records command receipt, valve movements, sensor
+readings, and fault events.
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{Version History}
+%═══════════════════════════════════════════════════════════════════════════════
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Version & Date & Notes \\
+\midrule
+0.1 & March 2026 & Initial release. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\end{document}

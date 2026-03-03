@@ -1,0 +1,257 @@
+\documentclass[11pt,letterpaper]{article}
+\input{../shared/KJO_preamble}
+\newcommand{\docversion}{0.1}
+\newcommand{\docdate}{March 2026}
+\lhead{\textsc{KJO Liquid Rocket Motor Control System}}
+\rhead{\textsc{System Overview} --- v\docversion}
+\cfoot{\thepage\ of \pageref{LastPage}}
+\hypersetup{pdftitle={KJO System Overview}, pdfauthor={Ken Overton}}
+
+\begin{document}
+\input{../shared/KJO_tikz_styles}
+
+\KJOtitlepage%
+  {KJO Liquid Rocket Motor\\Control System}%
+  {System Architecture and Operational Overview}%
+  {\docversion}{\docdate}%
+  {This document provides a high-level structural and functional overview of the
+   KJO control system for a bi-propellant liquid rocket motor.  It describes the
+   three electronic subsystems (RCU, EMU, GSEMU), the propellant flow
+   architecture, the inter-unit communication protocols, and the complete
+   command set.  Detailed subsystem reference documents are listed in
+   Section~\ref{sec:references}.}
+
+\tableofcontents
+\newpage
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{Introduction}
+%═══════════════════════════════════════════════════════════════════════════════
+
+The KJO system controls a bi-propellant liquid rocket motor using nitrous oxide
+(N\textsubscript{2}O) as the oxidizer and a liquid fuel with regenerative
+cooling.  Three autonomous microcontroller units share control responsibilities:
+
+\begin{itemize}[nosep]
+  \item \textbf{Remote Control Unit (RCU)} --- handheld operator terminal.
+        Sends commands over a 900~MHz LoRa radio link; displays system status
+        on a 3.5\textquotedbl\ colour touchscreen.
+  \item \textbf{Engine Management Unit (EMU)} --- mounted in the rocket.
+        Receives commands from the RCU, actuates the Oxidizer Feed, Fuel Feed,
+        and Dump servos, reads all sensors, and coordinates the Fill valve
+        with the GSEMU.
+  \item \textbf{GSE Management Unit (GSEMU)} --- mounted on the launch pad.
+        Controls the Fill valve servo and the umbilical quick-release servo;
+        communicates valve status back to the EMU over a two-wire GPIO
+        handshake.
+\end{itemize}
+
+All three units are based on the Adafruit Feather~M0 (ATSAMD21G18A,
+48~MHz ARM~Cortex-M0+, 3.3~V logic) and run firmware written in C++17
+using the Arduino / PlatformIO framework.
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{Propellant System}
+\label{sec:propellant}
+%═══════════════════════════════════════════════════════════════════════════════
+
+\subsection{Flow Architecture}
+
+Figure~\ref{fig:propellant} shows the propellant system schematic.
+
+\begin{figure}[H]
+  \centering
+  \resizebox{0.82\textwidth}{!}{\input{fig/propellant_flow}}
+  \caption{Propellant system schematic. Green lines: N\textsubscript{2}O fill path (GSE).
+           Blue lines: oxidizer feed path. Red lines: fuel feed path.
+           Orange dashed: autogenous pressurization.}
+  \label{fig:propellant}
+\end{figure}
+
+\subsection{Fill Sequence}
+
+\begin{enumerate}[nosep]
+  \item Operator commands \cmd{BEGIN\_FILL} from the RCU.
+  \item EMU asserts the CMD bit (AUX\_IO\_1) high.
+  \item GSEMU detects the CMD rising edge and opens the Fill valve servo.
+  \item N\textsubscript{2}O flows: GSE source tank~$\to$ Fill valve~$\to$
+        QR servo~$\to$ umbilical~$\to$ check valve~$\to$ on-board
+        oxidizer tank.
+  \item GSEMU asserts STATUS (AUX\_IO\_2) high when fill is complete.
+  \item EMU de-asserts CMD; GSEMU closes the Fill valve.
+\end{enumerate}
+
+\subsection{Engine Firing Sequence}
+
+\begin{enumerate}[nosep]
+  \item Operator commands \cmd{ENABLE\_LCO\_CONTROL} (enables launch authority).
+  \item Operator commands \cmd{START\_ENGINE}, which calls
+        \sw{Execute\_Command(START\_ENGINE)}.
+  \item EMU simultaneously opens Ox Feed valve and Fuel Feed valve to
+        programmed positions and activates the igniter relay.
+  \item Proportional control commands (\cmd{OXIDIZER\_FLOW\_PROP},
+        \cmd{FUEL\_FLOW\_PROP}) may be sent during burn to adjust mixture ratio.
+  \item \cmd{STOP\_ENGINE\_FLOWS} closes both feed valves to terminate thrust.
+\end{enumerate}
+
+\subsection{Dump / Safe Procedure}
+
+The \cmd{DUMP} command opens the Dump valve (servo, EMU-controlled), venting
+the on-board N\textsubscript{2}O tank to atmosphere via a vent line.  The RCU
+Dump button has latching behaviour --- a second press sends \cmd{STOP\_DUMP}
+and closes the valve.
+
+\subsection{Pressurization}
+
+The on-board N\textsubscript{2}O tank is self-pressurizing (autogenous).  The
+vapour-space pressure is communicated to the fuel tank via a dedicated
+pressurization line, eliminating the need for a separate pressurant.
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{Electronic Control Architecture}
+\label{sec:architecture}
+%═══════════════════════════════════════════════════════════════════════════════
+
+Figure~\ref{fig:control} shows the three-unit electronic control architecture.
+
+\begin{figure}[H]
+  \centering
+  \resizebox{\textwidth}{!}{\input{fig/control_architecture}}
+  \caption{Electronic control architecture. The RCU communicates with the EMU
+           over a 900~MHz LoRa radio link.  The EMU communicates with the
+           GSEMU over a two-wire GPIO handshake (CMD and STATUS).}
+  \label{fig:control}
+\end{figure}
+
+\subsection{RCU--EMU Radio Link}
+
+The link uses the HopeRF RFM95W module (Semtech SX1276 chipset) operating at
+915.0~MHz with 23~dBm transmit power.  Packets are simple binary structures
+(see Section~\ref{sec:packets}).  The RCU sends a \cmd{HEARTBEAT} packet at
+5-second intervals when no other command is pending; the EMU echoes a
+\cmd{HEARTBEAT} response containing valve positions and battery voltage.  Link
+loss is declared after 30~seconds without a response.
+
+\subsection{EMU--GSEMU GPIO Handshake}
+
+Two digital lines on the MCP23X17 GPIO expander carry the Fill valve handshake:
+\begin{itemize}[nosep]
+  \item \sig{AUX\_IO\_1} (CMD): driven by the EMU; asserted high to command the
+        Fill valve open, de-asserted to close.
+  \item \sig{AUX\_IO\_2} (STATUS): driven by the GSEMU; asserted high when the
+        Fill valve has reached its commanded position.
+\end{itemize}
+Additional GPIO lines (\sig{AUX\_IO\_3}, \sig{AUX\_IO\_4}) are reserved for the
+umbilical-release handshake (future implementation).
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{Shared Libraries}
+\label{sec:libs}
+%═══════════════════════════════════════════════════════════════════════════════
+
+Common definitions reside in \texttt{KJO\_Shared\_Libraries} and are shared
+across all three firmware projects via PlatformIO library dependencies:
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Library & Contents & Used by \\
+\midrule
+\sw{KJO\_System\_Config}  & Platform IDs, version strings      & RCU, EMU, GSEMU \\
+\sw{KJO\_Command\_Defs}   & Command codes, packet structs       & RCU, EMU \\
+\sw{KJO\_Radio}           & Radio pin assignments, frequency    & RCU, EMU \\
+\sw{KJO\_RCU\_Display}    & TFT GUI functions and data types    & RCU \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{Command Set}
+\label{sec:commands}
+%═══════════════════════════════════════════════════════════════════════════════
+
+\subsection{Packet Structures}
+
+Three binary packet types are used on the radio link:
+
+\begin{itemize}[nosep]
+  \item \textbf{Command\_Payload} (4 bytes): \texttt{command} (2B),
+        \texttt{param} (short, 2B).  Used for most commands.
+  \item \textbf{Heartbeat\_Command\_Packet} (6 bytes): \texttt{command} (2B),
+        \texttt{RCU\_voltage} (float, 4B).  Sent by RCU as heartbeat.
+  \item \textbf{Heartbeat\_Response\_Packet} (10 bytes): \texttt{command} (2B),
+        \texttt{EMU\_voltage} (float, 4B),
+        \texttt{fill\_pct}, \texttt{ox\_pct}, \texttt{fuel\_pct},
+        \texttt{dump\_pct} (uint8, 1B each).  Sent by EMU.
+  \item \textbf{Command\_Return\_Packet}: \texttt{command} (2B),
+        \texttt{status} (bool), \texttt{r\_val} (short).
+        Returned for non-heartbeat commands.
+\end{itemize}
+
+\subsection{Command Table}
+
+\begin{longtable}{@{}rllll@{}}
+\toprule
+Code & Name & Direction & \texttt{param} & Description \\
+\midrule
+\endhead
+\bottomrule
+\endfoot
+ 1 & \cmd{BEGIN\_FILL}           & RCU$\to$EMU & ---   & Command GSEMU to open Fill valve \\
+ 2 & \cmd{STOP\_FILL}            & RCU$\to$EMU & ---   & Command GSEMU to close Fill valve \\
+ 3 & \cmd{OPEN\_OXIDIZER\_FEED}  & RCU$\to$EMU & ---   & Open Ox Feed valve fully \\
+ 4 & \cmd{CLOSE\_OXIDIZER\_FEED} & RCU$\to$EMU & ---   & Close Ox Feed valve \\
+ 5 & \cmd{OPEN\_FUEL\_FEED}      & RCU$\to$EMU & ---   & Open Fuel Feed valve fully \\
+ 6 & \cmd{CLOSE\_FUEL\_FEED}     & RCU$\to$EMU & ---   & Close Fuel Feed valve \\
+ 7 & \cmd{OXIDIZER\_FLOW\_PROP}  & RCU$\to$EMU & \%    & Set Ox valve position (0--100\%) \\
+ 8 & \cmd{FUEL\_FLOW\_PROP}      & RCU$\to$EMU & \%    & Set Fuel valve position (0--100\%) \\
+ 9 & \cmd{DUMP}                  & RCU$\to$EMU & ---   & Open Dump valve; vent oxidizer \\
+10 & \cmd{STOP\_DUMP}            & RCU$\to$EMU & ---   & Close Dump valve \\
+11 & \cmd{START\_ENGINE\_FLOWS}  & RCU$\to$EMU & ---   & Open both feed valves simultaneously \\
+12 & \cmd{STOP\_ENGINE\_FLOWS}   & RCU$\to$EMU & ---   & Close both feed valves simultaneously \\
+13 & \cmd{ENABLE\_LCO\_CONTROL}  & RCU$\to$EMU & ---   & Enable launch authority \\
+14 & \cmd{START\_ENGINE}         & RCU$\to$EMU & ---   & Fire igniter and open valves \\
+15 & \cmd{RESET}                 & RCU$\to$EMU & ---   & Reset EMU to safe state \\
+16 & \cmd{READ\_TANK\_PRESSURE}  & RCU$\to$EMU & ---   & Return oxidizer tank pressure \\
+17 & \cmd{READ\_CHAMBER\_PRESSURE} & RCU$\to$EMU & ---  & Return chamber pressure \\
+18 & \cmd{READ\_TANK\_TEMP}      & RCU$\to$EMU & ---   & Return oxidizer tank temperature \\
+19 & \cmd{READ\_CHAMBER\_TEMP}   & RCU$\to$EMU & ---   & Return combustion chamber temperature \\
+20 & \cmd{START\_PRESSURE\_RECORDING} & RCU$\to$EMU & --- & Begin high-rate pressure logging \\
+21 & \cmd{STOP\_PRESSURE\_RECORDING}  & RCU$\to$EMU & --- & End high-rate pressure logging \\
+22 & \cmd{READ\_VALVE\_POSITION} & RCU$\to$EMU & valve\# & Return servo position (0--100\%) \\
+23 & \cmd{HEARTBEAT}             & Bidirectional & ---  & Keepalive / link maintenance \\
+24 & \cmd{RCU\_STATUS}           & RCU$\to$EMU & ---   & Request full status packet \\
+\end{longtable}
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{Document References}
+\label{sec:references}
+%═══════════════════════════════════════════════════════════════════════════════
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Document & File & Contents \\
+\midrule
+RCU Reference   & \texttt{RCU/KJO\_RCU\_Reference.pdf}   & Hardware, software, GUI \\
+EMU Reference   & \texttt{EMU/KJO\_EMU\_Reference.pdf}   & Hardware, software, valve control \\
+GSEMU Reference & \texttt{GSEMU/KJO\_GSEMU\_Reference.pdf} & Hardware, software, Fill valve \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{Version History}
+%═══════════════════════════════════════════════════════════════════════════════
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Version & Date & Notes \\
+\midrule
+0.1 & March 2026 & Initial release. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\end{document}

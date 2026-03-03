@@ -1,0 +1,26 @@
+# LaTeX build artefacts
+*.aux
+*.log
+*.toc
+*.out
+*.synctex.gz
+*.fls
+*.fdb_latexmk
+*.bbl
+*.blg
+*.lof
+*.lot
+*.nav
+*.snm
+*.vrb
+*.idx
+*.ind
+*.ilg
+*.bak
+
+# Generated PDFs — compile locally; do not commit binaries
+*.pdf
+
+# TeXworks / MiKTeX local files
+*.texpadtmp
+.texpadtmp/
