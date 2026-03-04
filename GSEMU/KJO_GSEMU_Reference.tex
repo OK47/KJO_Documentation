@@ -1,6 +1,6 @@
 \documentclass[11pt,letterpaper]{article}
 \input{../shared/KJO_preamble}
-\newcommand{\docversion}{0.1}
+\newcommand{\docversion}{0.2}
 \newcommand{\docdate}{March 2026}
 \lhead{\textsc{KJO GSE Management Unit}}
 \rhead{\textsc{GSEMU Reference} --- v\docversion}
@@ -56,8 +56,8 @@ Button B (local close) & IN  & Locally command Fill valve closed \\
 Button C (status)      & IN  & Query Fill valve position \\
 \sig{AUX\_IO\_1} (CMD)    & IN  & Fill valve CMD from EMU \\
 \sig{AUX\_IO\_2} (STATUS) & OUT & Fill valve STATUS to EMU \\
-\sig{AUX\_IO\_3} (CMD)    & IN  & Umbilical release CMD (reserved) \\
-\sig{AUX\_IO\_4} (STATUS) & OUT & Umbilical release STATUS (reserved) \\
+\sig{AUX\_IO\_3} (CMD) & IN  & Umbilical QR release CMD from EMU (INPUT\_PULLUP) \\
+\sig{AUX\_IO\_4}       & --- & Reserved \\
 Buzzer output & OUT & Audible alert \\
 \bottomrule
 \end{tabular}
@@ -113,7 +113,9 @@ Module & Location & Responsibility \\
 \sw{main.cpp}            & local  & Setup, loop, button handling \\
 \sw{KJO\_Valve}          & local  & Base valve: servo drive, pot feedback \\
 \sw{KJO\_Slave\_Valve}   & local  & CMD/STATUS GPIO handshake, local override \\
-\sw{KJO\_GPIO}           & local  & MCP23X17 pin assignments \\
+\sw{KJO\_QR\_Servo}      & local  & Servo-only actuator base class (time-based position) \\
+\sw{KJO\_QR\_Slave}      & local  & QR release state machine, AUX\_IO\_3 edge detection \\
+\sw{KJO\_GPIO}           & local  & MCP23X17 pin assignments, QR servo constants \\
 \sw{KJO\_GSE\_Display}   & local  & SH1107 OLED display, SD log helpers \\
 \sw{KJO\_Logging}        & local  & SD log file constants \\
 \sw{KJO\_System\_Config} & shared & Version, platform constants \\
@@ -129,6 +131,12 @@ The \sw{Valve} base class provides servo drive and potentiometer feedback.
 \sw{Slave\_Valve} adds edge-detection polling of \sig{AUX\_IO\_1} (CMD) and
 output driving of \sig{AUX\_IO\_2} (STATUS).
 
+\texttt{QR\_Servo} (base) $\longleftarrow$ \texttt{QR\_Slave} (derived).
+
+\sw{QR\_Servo} provides servo drive via the PCA9685 with time-based motion
+completion detection (no potentiometer).  \sw{QR\_Slave} adds the
+\sig{AUX\_IO\_3} rising-edge state machine for the umbilical release sequence.
+
 \subsection{Main Loop Control Flow}
 
 \begin{figure}[H]
@@ -137,12 +145,14 @@ output driving of \sig{AUX\_IO\_2} (STATUS).
   \node[flowterminal] (start)  {loop()};
   \node[flowproc, below=of start]  (buz)   {Buzzer.update()};
   \node[flowproc, below=of buz]    (fv)    {Fill\_Valve.update()\\(Slave\_Valve)};
-  \node[flowproc, below=of fv]     (btn)   {Check\_Buttons()};
+  \node[flowproc, below=of fv]     (qr)    {QR\_Release.update()\\(QR\_Slave)};
+  \node[flowproc, below=of qr]     (btn)   {Check\_Buttons()};
   \draw[flowarrow] (start)--(buz);
   \draw[flowarrow] (buz)--(fv);
-  \draw[flowarrow] (fv)--(btn);
+  \draw[flowarrow] (fv)--(qr);
+  \draw[flowarrow] (qr)--(btn);
   \draw[flowarrow] (btn.south) -- ++(0,-0.4) -- ++(3.5,0)
-    -- ++(0,4.1) -- (start.east);
+    -- ++(0,5.0) -- (start.east);
 \end{tikzpicture}
 \caption{GSEMU main loop control flow.}
 \end{figure}
@@ -208,6 +218,86 @@ The sequence from the GSEMU point of view:
 \end{enumerate}
 
 %═══════════════════════════════════════════════════════════════════════════════
+\section{Umbilical Quick-Release (\sw{QR\_Slave})}
+%═══════════════════════════════════════════════════════════════════════════════
+
+\subsection{Overview}
+
+The umbilical quick-release servo physically separates the umbilical connector
+from the rocket airframe at ignition.  The GSEMU drives the servo; the EMU
+commands the release via a single GPIO line (\sig{AUX\_IO\_3}).  The
+\sw{QR\_Slave} class manages the servo and the release state machine.
+
+\subsection{Hardware}
+
+The QR servo is driven by a channel on the PCA9685 Servo Wing.  Unlike the
+Fill valve servo, there is no potentiometer feedback; position is determined
+entirely by elapsed time (\sw{QR\_SERVO\_MOVE\_MS}).
+
+\begin{warningbox}
+\texttt{QR\_SERVO\_PWM\_HOLD} and \texttt{QR\_SERVO\_PWM\_OPEN} are
+placeholder values in the current firmware.  They \textbf{must} be calibrated
+on the bench before any live operation.  Verify servo travel direction and
+endpoint positions before connecting the umbilical.
+\end{warningbox}
+
+\subsection{Signal Protocol}
+
+\sig{AUX\_IO\_3} is driven by the EMU (\sw{QR\_Master}).
+The GSEMU reads it with INPUT\_PULLUP:
+
+\begin{center}
+\begin{tabular}{@{}ll@{}}
+\toprule
+\sig{AUX\_IO\_3} state & Meaning \\
+\midrule
+LOW (default / armed) & System armed; servo held at hold position \\
+Rising edge (LOW $\to$ HIGH) & Release commanded by EMU \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The GSEMU does \textbf{not} send a STATUS reply for the QR release — the
+operation is fire-and-forget.  The EMU is responsible for confirming
+successful separation by other means (e.g., accelerometer, visual inspection).
+
+\subsection{State Machine}
+
+\sw{QR\_Slave.update()} is called every loop iteration and advances through
+the following states:
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[node distance=2.2cm]
+  \node[statenode] (armed)    {ARMED};
+  \node[statenode, right=of armed]   (opening) {OPENING};
+  \node[statenode, right=of opening] (released){RELEASED};
+  \node[statenode, below=1.6cm of opening] (closing) {CLOSING};
+  \node[statenode, left=2.2cm of closing]  (done)    {DONE};
+  \draw[statetransition] (armed)    edge node[above,font=\tiny]{rising edge} (opening);
+  \draw[statetransition] (opening)  edge node[above,font=\tiny]{timer expired} (released);
+  \draw[statetransition] (released) edge node[right,font=\tiny]{hold elapsed} (closing);
+  \draw[statetransition] (closing)  edge node[above,font=\tiny]{timer expired} (done);
+  \draw[statetransition, loop below, looseness=5] (done) edge (done);
+\end{tikzpicture}
+\caption{QR\_Slave release state machine.}
+\end{figure}
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+State & Servo position & Condition to advance \\
+\midrule
+ARMED    & HOLD   & Rising edge on \sig{AUX\_IO\_3} \\
+OPENING  & Moving toward OPEN & \sw{QR\_SERVO\_MOVE\_MS} elapsed \\
+RELEASED & OPEN   & \sw{QR\_RELEASE\_HOLD\_MS} elapsed \\
+CLOSING  & Moving toward HOLD & \sw{QR\_SERVO\_MOVE\_MS} elapsed \\
+DONE     & HOLD   & Terminal state; stays here until power-cycle \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+%═══════════════════════════════════════════════════════════════════════════════
 \section{OLED Display}
 %═══════════════════════════════════════════════════════════════════════════════
 
@@ -236,6 +326,7 @@ changes, button presses, and system events.
 Version & Date & Notes \\
 \midrule
 0.1 & March 2026 & Initial release. \\
+0.2 & March 2026 & Add umbilical QR release subsystem (QR\_Servo, QR\_Slave, AUX\_IO\_3 protocol). \\
 \bottomrule
 \end{tabular}
 \end{center}

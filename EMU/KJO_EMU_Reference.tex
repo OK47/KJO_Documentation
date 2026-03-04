@@ -1,6 +1,6 @@
 \documentclass[11pt,letterpaper]{article}
 \input{../shared/KJO_preamble}
-\newcommand{\docversion}{0.1}
+\newcommand{\docversion}{0.2}
 \newcommand{\docdate}{March 2026}
 \lhead{\textsc{KJO Engine Management Unit}}
 \rhead{\textsc{EMU Reference} --- v\docversion}
@@ -60,8 +60,8 @@ Relay outputs (4$\times$) & OUT & Igniter relay and auxiliary relays \\
 Button inputs (4$\times$) & IN  & Local panel buttons \\
 \sig{AUX\_IO\_1}     & OUT & Fill valve CMD line (to GSEMU) \\
 \sig{AUX\_IO\_2}     & IN  & Fill valve STATUS line (from GSEMU) \\
-\sig{AUX\_IO\_3}     & OUT & Umbilical release CMD (reserved) \\
-\sig{AUX\_IO\_4}     & IN  & Umbilical release STATUS (reserved) \\
+\sig{AUX\_IO\_3}     & OUT & Umbilical QR release CMD to GSEMU (LOW = armed, HIGH pulse = release) \\
+\sig{AUX\_IO\_4}     & --- & Reserved \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -119,7 +119,8 @@ Module & Location & Responsibility \\
 \midrule
 \sw{main.cpp}              & local  & Setup, loop, command dispatch \\
 \sw{KJO\_Valve}            & local  & Base valve: servo drive, pot feedback \\
-\sw{KJO\_Master\_Valve}    & local  & Fill valve CMd/STATUS GPIO handshake \\
+\sw{KJO\_Master\_Valve}    & local  & Fill valve CMD/STATUS GPIO handshake \\
+\sw{KJO\_QR\_Master}       & local  & Umbilical QR release proxy: arms and fires AUX\_IO\_3 \\
 \sw{KJO\_Control\_System}  & local  & \sw{Execute\_Command()} routing table \\
 \sw{KJO\_Pressure}         & local  & Pressure transducer read / convert \\
 \sw{KJO\_Temperature}      & local  & Analog temperature transducer \\
@@ -249,6 +250,60 @@ completion (e.g., \cmd{DUMP}, \cmd{BEGIN\_FILL}) put the valve state machine
 into MOVING state; the acknowledgement is sent when the movement completes in
 \sw{Check\_Valve\_Move()}.
 
+\cmd{QR\_RELEASE} (code~25) is dispatched directly through
+\sw{Execute\_Command()} to \sw{QR\_Master::commandRelease()}, which issues a
+\sw{QR\_RELEASE\_PULSE\_MS}~(100\,ms) blocking HIGH pulse on \sig{AUX\_IO\_3}.
+The response is returned immediately after the pulse; no deferred state machine
+is involved.  The call is idempotent: subsequent \cmd{QR\_RELEASE} commands are
+no-ops once the servo has been released.
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{Umbilical Quick-Release (\sw{QR\_Master})}
+%═══════════════════════════════════════════════════════════════════════════════
+
+\subsection{Overview}
+
+\sw{QR\_Master} is the EMU-side proxy for the umbilical quick-release actuator
+that resides on the GSEMU.  It drives \sig{AUX\_IO\_3} to command the GSEMU
+\sw{QR\_Slave} state machine.
+
+\subsection{Signal Protocol}
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Signal & Driver & State \\
+\midrule
+\sig{AUX\_IO\_3} LOW  & EMU & System armed; GSEMU servo held at hold position \\
+\sig{AUX\_IO\_3} HIGH (100\,ms pulse) & EMU & Release commanded \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\sw{QR\_Master::begin()} drives \sig{AUX\_IO\_3} LOW immediately on startup,
+ensuring the GSEMU servo is held in the armed position until an explicit
+\cmd{QR\_RELEASE} command is received.
+
+\subsection{QR\_Master API}
+
+\begin{center}
+\begin{tabular}{@{}ll@{}}
+\toprule
+Method & Action \\
+\midrule
+\sw{begin()} & Configures pin as OUTPUT, drives LOW (armed) \\
+\sw{commandRelease()} & Pulses HIGH for \sw{QR\_RELEASE\_PULSE\_MS}, then drives LOW \\
+\sw{isReleased()} & Returns true after first call to \sw{commandRelease()} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{warningbox}
+\cmd{QR\_RELEASE} cannot be undone.  Once issued, the umbilical is physically
+disconnected.  Ensure the launch sequence has been verified before sending this
+command.
+\end{warningbox}
+
 %═══════════════════════════════════════════════════════════════════════════════
 \section{Sensor Subsystems}
 %═══════════════════════════════════════════════════════════════════════════════
@@ -289,6 +344,7 @@ readings, and fault events.
 Version & Date & Notes \\
 \midrule
 0.1 & March 2026 & Initial release. \\
+0.2 & March 2026 & Add umbilical QR release subsystem (QR\_Master, QR\_RELEASE command, AUX\_IO\_3 protocol). \\
 \bottomrule
 \end{tabular}
 \end{center}
