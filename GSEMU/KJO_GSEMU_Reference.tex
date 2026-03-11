@@ -1,6 +1,6 @@
 \documentclass[11pt,letterpaper]{article}
 \input{../shared/KJO_preamble}
-\newcommand{\docversion}{0.2}
+\newcommand{\docversion}{0.3}
 \newcommand{\docdate}{March 2026}
 \lhead{\textsc{KJO GSE Management Unit}}
 \rhead{\textsc{GSEMU Reference} --- v\docversion}
@@ -51,13 +51,15 @@ Battery         & 3.7~V LiPo                                    & ---     & \\
 \toprule
 Pin Name & Direction & Function \\
 \midrule
-Button A (local open)  & IN  & Locally command Fill valve open \\
-Button B (local close) & IN  & Locally command Fill valve closed \\
-Button C (status)      & IN  & Query Fill valve position \\
+Button A (QR release)  & IN  & Hold-to-release QR latch (servo open while held, hold when released) \\
+Button B (fill close)  & IN  & Locally command Fill valve closed \\
+Button C (fill open)   & IN  & Locally command Fill valve open \\
 \sig{AUX\_IO\_1} (CMD)    & IN  & Fill valve CMD from EMU \\
 \sig{AUX\_IO\_2} (STATUS) & OUT & Fill valve STATUS to EMU \\
-\sig{AUX\_IO\_3} (CMD) & IN  & Umbilical QR release CMD from EMU (INPUT\_PULLUP) \\
-\sig{AUX\_IO\_4}       & --- & Reserved \\
+\sig{AUX\_IO\_3} (\sig{QR\_CMD\_EIO})         & IN  & Umbilical QR release CMD from EMU (INPUT\_PULLUP; LOW = release, HIGH = hold) \\
+\sig{AUX\_IO\_4} (\sig{RELEASE\_STATE\_EIO})  & OUT & Umbilical separation state; wired to GND (LOW = connected, HIGH = separated) \\
+\sig{AUX\_IO\_5} (\sig{LAUNCH\_ENABLE\_EIO})  & IN  & Remote start enable from EMU (INPUT\_PULLUP; LOW = enabled) \\
+\sig{AUX\_IO\_6} (\sig{REMOTE\_START\_EIO})   & OUT & Remote start command to EMU (OUTPUT; LOW = start commanded, HIGH = hold) \\
 Buzzer output & OUT & Audible alert \\
 \bottomrule
 \end{tabular}
@@ -114,7 +116,7 @@ Module & Location & Responsibility \\
 \sw{KJO\_Valve}          & local  & Base valve: servo drive, pot feedback \\
 \sw{KJO\_Slave\_Valve}   & local  & CMD/STATUS GPIO handshake, local override \\
 \sw{KJO\_QR\_Servo}      & local  & Servo-only actuator base class (time-based position) \\
-\sw{KJO\_QR\_Slave}      & local  & QR release state machine, AUX\_IO\_3 edge detection \\
+\sw{KJO\_QR\_Slave}      & local  & QR release level-follower; CMD (\sig{AUX\_IO\_3}), state (\sig{AUX\_IO\_4}), local override \\
 \sw{KJO\_GPIO}           & local  & MCP23X17 pin assignments, QR servo constants \\
 \sw{KJO\_GSE\_Display}   & local  & SH1107 OLED display, SD log helpers \\
 \sw{KJO\_Logging}        & local  & SD log file constants \\
@@ -134,8 +136,10 @@ output driving of \sig{AUX\_IO\_2} (STATUS).
 \texttt{QR\_Servo} (base) $\longleftarrow$ \texttt{QR\_Slave} (derived).
 
 \sw{QR\_Servo} provides servo drive via the PCA9685 with time-based motion
-completion detection (no potentiometer).  \sw{QR\_Slave} adds the
-\sig{AUX\_IO\_3} rising-edge state machine for the umbilical release sequence.
+completion detection (no potentiometer).  \sw{QR\_Slave} adds level-based
+CMD following (\sig{AUX\_IO\_3}: LOW = open latch, HIGH = hold latch),
+physical separation detection via \sig{AUX\_IO\_4} (\sig{RELEASE\_STATE\_EIO}),
+and a local Button~A override (\sw{localRelease()} / \sw{localHold()}).
 
 \subsection{Main Loop Control Flow}
 
@@ -183,25 +187,29 @@ reached the commanded position (within dead-band).
 
 \subsection{Local Button Override}
 
-Three panel buttons on the MCP23X17 allow the GSEMU to control the Fill
-valve independently of the EMU, useful during ground testing:
+Three panel buttons on the MCP23X17 provide local control during ground
+operations:
 
 \begin{center}
-\begin{tabular}{@{}lll@{}}
+\begin{tabular}{@{}ll@{}}
 \toprule
 Button & Action \\
 \midrule
-A (Open)  & Drive Fill valve servo to fully open position \\
-B (Close) & Drive Fill valve servo to fully closed position \\
-C (Status)& Display current valve position (\%) on OLED \\
+A (QR Release) & \textbf{Hold-to-release}: calls \sw{localRelease()} on press; servo opens
+                 while button held.  Calls \sw{localHold()} on release; servo returns to
+                 hold position.  Event logged to SD card. \\
+B (Fill Close) & Drive Fill valve servo to fully closed position (falling-edge triggered). \\
+C (Fill Open)  & Drive Fill valve servo to fully open position (falling-edge triggered). \\
 \bottomrule
 \end{tabular}
 \end{center}
 
 \begin{warningbox}
-Local button overrides bypass the EMU command authority.  Use for
-ground testing only.  During a fill or engine operation sequence, local
-overrides should not be used.
+Button~A activates the umbilical quick-release servo.  The latch opens for
+as long as the button is held, and releases pressurised
+N\textsubscript{2}O when the umbilical separates.  Ensure all personnel are
+clear and the pad is safe before pressing Button~A.
+Buttons~B and~C bypass EMU command authority; use for ground testing only.
 \end{warningbox}
 
 \subsection{Handshake from GSEMU Perspective}
@@ -224,15 +232,26 @@ The sequence from the GSEMU point of view:
 \subsection{Overview}
 
 The umbilical quick-release servo physically separates the umbilical connector
-from the rocket airframe at ignition.  The GSEMU drives the servo; the EMU
-commands the release via a single GPIO line (\sig{AUX\_IO\_3}).  The
-\sw{QR\_Slave} class manages the servo and the release state machine.
+from the rocket airframe at launch.  The GSEMU drives the servo; the EMU
+commands the release via a level-based GPIO protocol on two AUX connector
+lines.  The \sw{QR\_Slave} class manages the servo, the CMD-level follower,
+and physical separation detection.
 
 \subsection{Hardware}
 
 The QR servo is driven by a channel on the PCA9685 Servo Wing.  Unlike the
 Fill valve servo, there is no potentiometer feedback; position is determined
 entirely by elapsed time (\sw{QR\_SERVO\_MOVE\_MS}).
+
+Two MCP23X17 expansion I/O lines are used:
+
+\begin{itemize}[nosep]
+  \item \sig{AUX\_IO\_3} (\sig{QR\_CMD\_EIO}) --- INPUT\_PULLUP.
+        Reads the CMD level from the EMU.
+  \item \sig{AUX\_IO\_4} (\sig{RELEASE\_STATE\_EIO}) --- wired to GSEMU chassis
+        GND.  When read by the EMU as INPUT\_PULLUP: LOW = umbilical connected,
+        HIGH = connector removed (separated).
+\end{itemize}
 
 \begin{warningbox}
 \texttt{QR\_SERVO\_PWM\_HOLD} and \texttt{QR\_SERVO\_PWM\_OPEN} are
@@ -243,56 +262,70 @@ endpoint positions before connecting the umbilical.
 
 \subsection{Signal Protocol}
 
-\sig{AUX\_IO\_3} is driven by the EMU (\sw{QR\_Master}).
-The GSEMU reads it with INPUT\_PULLUP:
-
-\begin{center}
-\begin{tabular}{@{}ll@{}}
-\toprule
-\sig{AUX\_IO\_3} state & Meaning \\
-\midrule
-LOW (default / armed) & System armed; servo held at hold position \\
-Rising edge (LOW $\to$ HIGH) & Release commanded by EMU \\
-\bottomrule
-\end{tabular}
-\end{center}
-
-The GSEMU does \textbf{not} send a STATUS reply for the QR release — the
-operation is fire-and-forget.  The EMU is responsible for confirming
-successful separation by other means (e.g., accelerometer, visual inspection).
-
-\subsection{State Machine}
-
-\sw{QR\_Slave.update()} is called every loop iteration and advances through
-the following states:
-
-\begin{figure}[H]
-\centering
-\begin{tikzpicture}[node distance=2.2cm]
-  \node[statenode] (armed)    {ARMED};
-  \node[statenode, right=of armed]   (opening) {OPENING};
-  \node[statenode, right=of opening] (released){RELEASED};
-  \node[statenode, below=1.6cm of opening] (closing) {CLOSING};
-  \node[statenode, left=2.2cm of closing]  (done)    {DONE};
-  \draw[statetransition] (armed)    edge node[above,font=\tiny]{rising edge} (opening);
-  \draw[statetransition] (opening)  edge node[above,font=\tiny]{timer expired} (released);
-  \draw[statetransition] (released) edge node[right,font=\tiny]{hold elapsed} (closing);
-  \draw[statetransition] (closing)  edge node[above,font=\tiny]{timer expired} (done);
-  \draw[statetransition, loop below, looseness=5] (done) edge (done);
-\end{tikzpicture}
-\caption{QR\_Slave release state machine.}
-\end{figure}
+\sig{AUX\_IO\_3} (\sig{QR\_CMD\_EIO}) is driven by the EMU (\sw{QR\_Master}).
+The GSEMU reads it with INPUT\_PULLUP on every \sw{update()} call:
 
 \begin{center}
 \begin{tabular}{@{}lll@{}}
 \toprule
-State & Servo position & Condition to advance \\
+\sig{QR\_CMD\_EIO} Level & Meaning & Servo action \\
 \midrule
-ARMED    & HOLD   & Rising edge on \sig{AUX\_IO\_3} \\
-OPENING  & Moving toward OPEN & \sw{QR\_SERVO\_MOVE\_MS} elapsed \\
-RELEASED & OPEN   & \sw{QR\_RELEASE\_HOLD\_MS} elapsed \\
-CLOSING  & Moving toward HOLD & \sw{QR\_SERVO\_MOVE\_MS} elapsed \\
-DONE     & HOLD   & Terminal state; stays here until power-cycle \\
+HIGH (default) & Latch hold / armed & Servo commanded to HOLD position \\
+LOW            & Release commanded  & Servo commanded to OPEN position \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+When the AUX connector is disconnected, INPUT\_PULLUP floats HIGH --- the
+servo defaults to HOLD (safe, latch engaged).
+
+\subsection{Level-Follower Operation}
+
+\sw{QR\_Slave::update()} is called every \sw{loop()} iteration.  It reads
+the current level of \sig{QR\_CMD\_EIO} (or uses the local override flag if
+Button~A is held) and drives the servo accordingly:
+
+\begin{itemize}[nosep]
+  \item CMD LOW and servo not already at or moving to OPEN $\Rightarrow$
+        call \sw{openServo()}.
+  \item CMD HIGH and servo not already at or moving to HOLD $\Rightarrow$
+        call \sw{holdServo()}.
+\end{itemize}
+
+The servo holds its last commanded position while the CMD level is
+unchanged.  There is no terminal/latch state: the servo will return to HOLD
+any time the CMD line goes HIGH (e.g., EMU calls \sw{hold()}, power cycle,
+or AUX cable disconnection).
+
+\subsection{Local Button A Override}
+
+Button~A on the GSEMU front panel engages a local override that bypasses the
+CMD line.  \sw{Check\_Buttons()} calls:
+
+\begin{itemize}[nosep]
+  \item \sw{QR\_Release.localRelease()} on button press (falling edge).
+  \item \sw{QR\_Release.localHold()} on button release (rising edge).
+\end{itemize}
+
+While the override is active (\sw{\_local\_override = true}), \sw{update()}
+substitutes LOW for the CMD pin read --- the servo stays open regardless of
+what the EMU is driving.  The override is cleared on button release; the servo
+returns to CMD-line following on the next \sw{loop()} iteration.
+
+\subsection{QR\_Slave API}
+
+\begin{center}
+\begin{tabular}{@{}ll@{}}
+\toprule
+Method & Action \\
+\midrule
+\sw{begin()}           & Configure CMD and state pins; command servo to HOLD \\
+\sw{update()}          & Poll CMD (or override), drive servo; detect separation \\
+\sw{isSeparated()}     & Returns true (latched) once state line has gone HIGH \\
+\sw{isConnected()}     & Returns true while state line reads LOW \\
+\sw{localRelease()}    & Set local override; servo opens on next \sw{update()} \\
+\sw{localHold()}       & Clear local override; servo follows CMD on next \sw{update()} \\
+\sw{isLocalOverride()} & Returns true while Button~A override is active \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -327,6 +360,12 @@ Version & Date & Notes \\
 \midrule
 0.1 & March 2026 & Initial release. \\
 0.2 & March 2026 & Add umbilical QR release subsystem (QR\_Servo, QR\_Slave, AUX\_IO\_3 protocol). \\
+0.3 & March 2026 & Level-based QR protocol (CMD LOW=release, HIGH=hold); add RELEASE\_STATE\_EIO (AUX\_IO\_4),
+                   LAUNCH\_ENABLE\_EIO (AUX\_IO\_5), REMOTE\_START\_EIO (AUX\_IO\_6);
+                   Button~A reassigned to hold-to-release QR latch;
+                   Button~C now opens Fill valve; \sw{QR\_Slave} API adds \sw{localRelease()},
+                   \sw{localHold()}, \sw{isLocalOverride()}, \sw{isSeparated()}, \sw{isConnected()};
+                   \sw{Check\_AUX\_Input()} drives gated Remote Start output. \\
 \bottomrule
 \end{tabular}
 \end{center}

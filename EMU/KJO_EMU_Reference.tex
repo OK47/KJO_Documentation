@@ -1,6 +1,6 @@
 \documentclass[11pt,letterpaper]{article}
 \input{../shared/KJO_preamble}
-\newcommand{\docversion}{0.2}
+\newcommand{\docversion}{0.3}
 \newcommand{\docdate}{March 2026}
 \lhead{\textsc{KJO Engine Management Unit}}
 \rhead{\textsc{EMU Reference} --- v\docversion}
@@ -60,8 +60,10 @@ Relay outputs (4$\times$) & OUT & Igniter relay and auxiliary relays \\
 Button inputs (4$\times$) & IN  & Local panel buttons \\
 \sig{AUX\_IO\_1}     & OUT & Fill valve CMD line (to GSEMU) \\
 \sig{AUX\_IO\_2}     & IN  & Fill valve STATUS line (from GSEMU) \\
-\sig{AUX\_IO\_3}     & OUT & Umbilical QR release CMD to GSEMU (LOW = armed, HIGH pulse = release) \\
-\sig{AUX\_IO\_4}     & --- & Reserved \\
+\sig{AUX\_IO\_3} (\sig{QR\_CMD\_EIO})         & OUT & Umbilical QR release CMD (HIGH = latch hold/armed, LOW = release) \\
+\sig{AUX\_IO\_4} (\sig{RELEASE\_STATE\_EIO})  & IN  & Umbilical separation state (INPUT\_PULLUP; LOW = connected, HIGH = separated) \\
+\sig{AUX\_IO\_5} (\sig{LAUNCH\_ENABLE\_EIO})  & OUT & Remote start enable to GSEMU (HIGH = disabled default, LOW = enabled) \\
+\sig{AUX\_IO\_6} (\sig{REMOTE\_START\_EIO})   & IN  & Remote start command from GSEMU (INPUT\_PULLUP; LOW = start commanded) \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -120,7 +122,7 @@ Module & Location & Responsibility \\
 \sw{main.cpp}              & local  & Setup, loop, command dispatch \\
 \sw{KJO\_Valve}            & local  & Base valve: servo drive, pot feedback \\
 \sw{KJO\_Master\_Valve}    & local  & Fill valve CMD/STATUS GPIO handshake \\
-\sw{KJO\_QR\_Master}       & local  & Umbilical QR release proxy: arms and fires AUX\_IO\_3 \\
+\sw{KJO\_QR\_Master}       & local  & Umbilical QR release proxy: level-based CMD (\sig{AUX\_IO\_3}), separation state (\sig{AUX\_IO\_4}) \\
 \sw{KJO\_Control\_System}  & local  & \sw{Execute\_Command()} routing table \\
 \sw{KJO\_Pressure}         & local  & Pressure transducer read / convert \\
 \sw{KJO\_Temperature}      & local  & Analog temperature transducer \\
@@ -250,12 +252,14 @@ completion (e.g., \cmd{DUMP}, \cmd{BEGIN\_FILL}) put the valve state machine
 into MOVING state; the acknowledgement is sent when the movement completes in
 \sw{Check\_Valve\_Move()}.
 
-\cmd{QR\_RELEASE} (code~25) is dispatched directly through
-\sw{Execute\_Command()} to \sw{QR\_Master::commandRelease()}, which issues a
-\sw{QR\_RELEASE\_PULSE\_MS}~(100\,ms) blocking HIGH pulse on \sig{AUX\_IO\_3}.
-The response is returned immediately after the pulse; no deferred state machine
-is involved.  The call is idempotent: subsequent \cmd{QR\_RELEASE} commands are
-no-ops once the servo has been released.
+\cmd{QR\_RELEASE} (code~25) is dispatched through \sw{Execute\_Command()} to
+\sw{QR\_Master::release()}, which drives \sig{AUX\_IO\_3} (\sig{QR\_CMD\_EIO})
+LOW to command the GSEMU servo to open the umbilical latch.  The CMD line
+remains LOW until \sw{hold()} is called or the system is reset.  The response
+is returned immediately; physical separation is confirmed asynchronously by
+polling \sw{QR\_Master::isSeparated()}, which reads \sig{AUX\_IO\_4}
+(\sig{RELEASE\_STATE\_EIO}) --- that line goes HIGH when the umbilical connector
+physically disconnects (INPUT\_PULLUP floats HIGH).
 
 %═══════════════════════════════════════════════════════════════════════════════
 \section{Umbilical Quick-Release (\sw{QR\_Master})}
@@ -264,25 +268,44 @@ no-ops once the servo has been released.
 \subsection{Overview}
 
 \sw{QR\_Master} is the EMU-side proxy for the umbilical quick-release actuator
-that resides on the GSEMU.  It drives \sig{AUX\_IO\_3} to command the GSEMU
-\sw{QR\_Slave} state machine.
+that resides on the GSEMU.  It drives two MCP23X17 expansion I/O lines:
+
+\begin{itemize}[nosep]
+  \item \sig{AUX\_IO\_3} (\sig{QR\_CMD\_EIO}) --- OUTPUT.  Level-based command
+        to the GSEMU QR servo.
+  \item \sig{AUX\_IO\_4} (\sig{RELEASE\_STATE\_EIO}) --- INPUT\_PULLUP.  Wired
+        to GSEMU chassis GND through the AUX connector.  Reads LOW while the
+        umbilical is physically connected; floats HIGH when the connector is
+        removed (separation confirmed).
+\end{itemize}
 
 \subsection{Signal Protocol}
 
 \begin{center}
 \begin{tabular}{@{}lll@{}}
 \toprule
-Signal & Driver & State \\
+\sig{QR\_CMD\_EIO} Level & Driver & Meaning \\
 \midrule
-\sig{AUX\_IO\_3} LOW  & EMU & System armed; GSEMU servo held at hold position \\
-\sig{AUX\_IO\_3} HIGH (100\,ms pulse) & EMU & Release commanded \\
+HIGH (default) & EMU & Latch engaged --- GSEMU servo held at hold position \\
+LOW            & EMU & Latch open --- GSEMU servo commanded to release position \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-\sw{QR\_Master::begin()} drives \sig{AUX\_IO\_3} LOW immediately on startup,
-ensuring the GSEMU servo is held in the armed position until an explicit
-\cmd{QR\_RELEASE} command is received.
+\sw{QR\_Master::begin()} configures \sig{QR\_CMD\_EIO} as OUTPUT and drives it
+HIGH on startup, so the GSEMU latch remains engaged until an explicit
+\cmd{QR\_RELEASE} command or \sw{release()} call is received.
+The safe default is therefore \emph{latch closed}: a disconnected or
+unpowered AUX connector cannot accidentally trigger a release.
+
+\subsection{Separation Detection}
+
+\sig{RELEASE\_STATE\_EIO} is configured as INPUT\_PULLUP and is wired to GSEMU
+GND through the umbilical connector.  When the umbilical is connected the line
+reads LOW.  When the connector is physically removed the INPUT\_PULLUP pulls
+the line HIGH.  \sw{QR\_Master::update()} (or any call to
+\sw{isSeparated()}) latches this transition; once latched it remains true for
+the remainder of the session.
 
 \subsection{QR\_Master API}
 
@@ -291,17 +314,21 @@ ensuring the GSEMU servo is held in the armed position until an explicit
 \toprule
 Method & Action \\
 \midrule
-\sw{begin()} & Configures pin as OUTPUT, drives LOW (armed) \\
-\sw{commandRelease()} & Pulses HIGH for \sw{QR\_RELEASE\_PULSE\_MS}, then drives LOW \\
-\sw{isReleased()} & Returns true after first call to \sw{commandRelease()} \\
+\sw{begin()}       & Configures CMD pin as OUTPUT (HIGH), state pin as INPUT\_PULLUP \\
+\sw{release()}     & Drives \sig{QR\_CMD\_EIO} LOW --- commands GSEMU to open latch \\
+\sw{hold()}        & Drives \sig{QR\_CMD\_EIO} HIGH --- commands GSEMU to hold latch \\
+\sw{isConnected()} & Returns true while \sig{RELEASE\_STATE\_EIO} reads LOW \\
+\sw{isSeparated()} & Returns true (latched) once state line has gone HIGH \\
 \bottomrule
 \end{tabular}
 \end{center}
 
 \begin{warningbox}
-\cmd{QR\_RELEASE} cannot be undone.  Once issued, the umbilical is physically
-disconnected.  Ensure the launch sequence has been verified before sending this
-command.
+Ensure the launch sequence has been verified and all personnel are clear
+before issuing \cmd{QR\_RELEASE}.  The umbilical disconnection releases
+pressurised N\textsubscript{2}O.  Calling \sw{hold()} after \sw{release()}
+returns the CMD line HIGH but cannot re-engage a latch that has already
+opened mechanically.
 \end{warningbox}
 
 %═══════════════════════════════════════════════════════════════════════════════
@@ -345,6 +372,10 @@ Version & Date & Notes \\
 \midrule
 0.1 & March 2026 & Initial release. \\
 0.2 & March 2026 & Add umbilical QR release subsystem (QR\_Master, QR\_RELEASE command, AUX\_IO\_3 protocol). \\
+0.3 & March 2026 & Level-based QR protocol (release=LOW, hold=HIGH); add RELEASE\_STATE\_EIO (AUX\_IO\_4),
+                   LAUNCH\_ENABLE\_EIO (AUX\_IO\_5), REMOTE\_START\_EIO (AUX\_IO\_6);
+                   Button~A reassigned to hold-to-open Dump valve;
+                   \sw{QR\_Master} API updated: \sw{release()}, \sw{hold()}, \sw{isSeparated()}, \sw{isConnected()}. \\
 \bottomrule
 \end{tabular}
 \end{center}
