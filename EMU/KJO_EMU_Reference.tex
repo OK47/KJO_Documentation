@@ -1,6 +1,6 @@
 \documentclass[11pt,letterpaper]{article}
 \input{../shared/KJO_preamble}
-\newcommand{\docversion}{0.3}
+\newcommand{\docversion}{0.4}
 \newcommand{\docdate}{March 2026}
 \lhead{\textsc{KJO Engine Management Unit}}
 \rhead{\textsc{EMU Reference} --- v\docversion}
@@ -15,9 +15,10 @@
   {Hardware and Software Reference}%
   {\docversion}{\docdate}%
   {This document describes the hardware, software architecture, valve control
-   system, Fill valve handshake protocol, sensor subsystems, and control flow
-   of the Engine Management Unit.  The EMU is mounted inside the rocket and
-   is the primary actuator and sensor node of the KJO system.}
+   system, Fill valve handshake protocol, sensor subsystems, buzzer and visual
+   indicator state machine, and control flow of the Engine Management Unit.
+   The EMU is mounted inside the rocket and is the primary actuator and
+   sensor node of the KJO system.}
 
 \tableofcontents\newpage
 
@@ -36,15 +37,15 @@ Microcontroller   & Adafruit Feather M0 (ATSAMD21G18A, 48~MHz)  & ---     & \\
 OLED Display      & SH1107, 128$\times$64, 1.12\textquotedbl      & I\textsuperscript{2}C & \\
 GPIO Expander     & MCP23X17 (16 I/O)                            & I\textsuperscript{2}C & Relays, buttons, AUX\_IO \\
 PWM Servo Wing    & Adafruit 8-channel wing (PCA9685)            & I\textsuperscript{2}C & Ox, Fuel, Dump servos \\
-ADC               & ADS1015 (12-bit, 4-ch)                       & I\textsuperscript{2}C & Pressure transducers \\
+ADC               & ADS1015 (12-bit, 4-ch)                       & I\textsuperscript{2}C & Battery + AUX A/D \\
 Thermocouple IF   & MAX31856 (2$\times$)                         & SPI     & TC1, TC2 \\
 Real-Time Clock   & PCF8523                                      & I\textsuperscript{2}C & \\
 LoRa Radio        & HopeRF RFM95W (Semtech SX1276), 915~MHz      & SPI     & \\
 SD Card           & Standard SPI SD socket                       & SPI     & \\
-NeoPixel          & WS2812B (1$\times$)                          & GPIO    & Status indicator \\
+NeoPixel          & WS2812B 4$\times$8 array                     & GPIO    & Status indicator \\
 Igniter Relay     & SPDT relay via MCP23X17                      & GPIO    & \\
-Buzzer            & Passive piezo                                & PWM     & \\
-Battery           & 3.7~V LiPo; voltage divider on ADC           & ADC     & \\
+Buzzer            & Passive piezo via MCP23X17 relay             & GPIO    & \\
+Battery           & 3.7~V LiPo; voltage divider on ADS1015       & ADC     & \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -56,14 +57,17 @@ Battery           & 3.7~V LiPo; voltage divider on ADC           & ADC     & \\
 \toprule
 Pin Name & Direction & Function \\
 \midrule
-Relay outputs (4$\times$) & OUT & Igniter relay and auxiliary relays \\
-Button inputs (4$\times$) & IN  & Local panel buttons \\
-\sig{AUX\_IO\_1}     & OUT & Fill valve CMD line (to GSEMU) \\
-\sig{AUX\_IO\_2}     & IN  & Fill valve STATUS line (from GSEMU) \\
-\sig{AUX\_IO\_3} (\sig{QR\_CMD\_EIO})         & OUT & Umbilical QR release CMD (HIGH = latch hold/armed, LOW = release) \\
-\sig{AUX\_IO\_4} (\sig{RELEASE\_STATE\_EIO})  & IN  & Umbilical separation state (INPUT\_PULLUP; LOW = connected, HIGH = separated) \\
-\sig{AUX\_IO\_5} (\sig{LAUNCH\_ENABLE\_EIO})  & OUT & Remote start enable to GSEMU (HIGH = disabled default, LOW = enabled) \\
-\sig{AUX\_IO\_6} (\sig{REMOTE\_START\_EIO})   & IN  & Remote start command from GSEMU (INPUT\_PULLUP; LOW = start commanded) \\
+\sig{BUTTON\_A\_EIO}                              & IN  & Front-panel button A (hold-to-open Dump valve) \\
+\sig{BUTTON\_B\_EIO}                              & IN  & Front-panel button B (close Fill valve) \\
+\sig{BUTTON\_C\_EIO}                              & IN  & Front-panel button C (open Fill valve) \\
+\sig{IGNITER\_EIO}                                & OUT & Igniter relay drive \\
+\sig{BUZZER\_EIO}                                 & OUT & Buzzer relay drive \\
+\sig{AUX\_IO\_1} (\sig{FILL\_VALVE\_CMD\_EIO})    & OUT & Fill valve CMD line to GSEMU \\
+\sig{AUX\_IO\_2} (\sig{FILL\_VALVE\_STATUS\_EIO}) & IN  & Fill valve STATUS line from GSEMU \\
+\sig{AUX\_IO\_3} (\sig{QR\_CMD\_EIO})             & OUT & Umbilical QR release CMD (HIGH = hold, LOW = release) \\
+\sig{AUX\_IO\_4} (\sig{RELEASE\_STATE\_EIO})      & IN  & Separation state (INPUT\_PULLUP; LOW = connected, HIGH = separated) \\
+\sig{AUX\_IO\_5} (\sig{LAUNCH\_ENABLE\_EIO})      & OUT & Remote start enable to GSEMU (HIGH = disabled, LOW = enabled) \\
+\sig{AUX\_IO\_6} (\sig{REMOTE\_START\_EIO})       & IN  & Remote start command from GSEMU (INPUT\_PULLUP; LOW = start) \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -86,7 +90,7 @@ Button inputs (4$\times$) & IN  & Local panel buttons \\
   \node[hwblock, right=2.3cm of mcu, yshift= 0.8cm, minimum width=3.0cm] (tc1) {MAX31856 TC×2};
   \node[hwblock, right=2.3cm of mcu, yshift=-0.4cm, minimum width=3.0cm] (sd)  {SD Card};
   % GPIO below
-  \node[hwblock, below=1.5cm of mcu, xshift=-1.8cm, minimum width=2.8cm] (neo) {NeoPixel};
+  \node[hwblock, below=1.5cm of mcu, xshift=-1.8cm, minimum width=2.8cm] (neo) {NeoPixel 4×8};
   \node[hwblock, below=1.5cm of mcu, xshift= 1.8cm, minimum width=2.8cm] (buz) {Buzzer};
   % Power
   \node[powerblock, below=3.0cm of mcu, minimum width=3.0cm] (bat) {LiPo Battery};
@@ -119,10 +123,10 @@ Button inputs (4$\times$) & IN  & Local panel buttons \\
 \toprule
 Module & Location & Responsibility \\
 \midrule
-\sw{main.cpp}              & local  & Setup, loop, command dispatch \\
+\sw{main.cpp}              & local  & Setup, loop, command dispatch, state machines \\
 \sw{KJO\_Valve}            & local  & Base valve: servo drive, pot feedback \\
 \sw{KJO\_Master\_Valve}    & local  & Fill valve CMD/STATUS GPIO handshake \\
-\sw{KJO\_QR\_Master}       & local  & Umbilical QR release proxy: level-based CMD (\sig{AUX\_IO\_3}), separation state (\sig{AUX\_IO\_4}) \\
+\sw{KJO\_QR\_Master}       & local  & Umbilical QR release proxy \\
 \sw{KJO\_Control\_System}  & local  & \sw{Execute\_Command()} routing table \\
 \sw{KJO\_Pressure}         & local  & Pressure transducer read / convert \\
 \sw{KJO\_Temperature}      & local  & Analog temperature transducer \\
@@ -130,7 +134,7 @@ Module & Location & Responsibility \\
 \sw{KJO\_Analog}           & local  & ADS1015 ADC wrapper \\
 \sw{KJO\_GPIO}             & local  & MCP23X17 pin definitions, Relay class \\
 \sw{KJO\_EMU\_Display}     & local  & SH1107 OLED display functions \\
-\sw{KJO\_Indicator}        & local  & NeoPixel status indicator \\
+\sw{KJO\_Indicator}        & local  & NeoPixel status indicator (solid, timed, flash) \\
 \sw{KJO\_Logging}          & local  & SD log file constants \\
 \sw{KJO\_Radio}            & shared & Radio pin constants, frequency \\
 \sw{KJO\_Command\_Defs}    & shared & Command codes, packet structures \\
@@ -145,14 +149,26 @@ Module & Location & Responsibility \\
 \centering
 \begin{tikzpicture}[node distance=0.55cm]
   \node[flowterminal] (start)  {loop()};
-  \node[flowproc, below=of start]  (btn)  {Check\_Buttons()};
+  \node[flowproc, below=of start]  (rel)  {Service relay timers\\(Igniter\_Relay, Buzzer)};
+  \node[flowproc, below=of rel]    (ind)  {Indicator.update()};
+  \node[flowproc, below=of ind]    (btn)  {Check\_Buttons()};
   \node[flowproc, below=of btn]    (vchk) {Check\_Valve\_Move()};
-  \node[flowproc, below=of vchk]   (rx)   {Check\_Radio()};
-  \draw[flowarrow] (start)--(btn);
+  \node[flowproc, below=of vchk]   (eng)  {Check\_Engine\_Start()};
+  \node[flowproc, below=of eng]    (rmt)  {Check\_Remote\_Start()};
+  \node[flowproc, below=of rmt]    (prec) {Check\_Pressure\_Recording()};
+  \node[flowproc, below=of prec]   (iab)  {Check\_Indicator\_And\_Buzzer()};
+  \node[flowproc, below=of iab]    (rx)   {Check\_Radio()};
+  \draw[flowarrow] (start)--(rel);
+  \draw[flowarrow] (rel)--(ind);
+  \draw[flowarrow] (ind)--(btn);
   \draw[flowarrow] (btn)--(vchk);
-  \draw[flowarrow] (vchk)--(rx);
-  \draw[flowarrow] (rx.south) -- ++(0,-0.4) -- ++(3.5,0)
-    -- ++(0,4.5) -- (start.east);
+  \draw[flowarrow] (vchk)--(eng);
+  \draw[flowarrow] (eng)--(rmt);
+  \draw[flowarrow] (rmt)--(prec);
+  \draw[flowarrow] (prec)--(iab);
+  \draw[flowarrow] (iab)--(rx);
+  \draw[flowarrow] (rx.south) -- ++(0,-0.4) -- ++(4.0,0)
+    -- ++(0,10.5) -- (start.east);
 \end{tikzpicture}
 \caption{EMU main loop control flow.}
 \end{figure}
@@ -175,40 +191,78 @@ The \sw{Valve} class encapsulates a servo-driven, potentiometer-feedback valve:
         \sw{isOpen()}, \sw{isClosed()}.
 \end{itemize}
 
-\subsection{Deferred Valve State Machine}
+\subsection{EMU State Machine}
 
-Valve movements are not blocking.  \sw{Check\_Valve\_Move()} is called every
-loop iteration and monitors the active valve:
+The EMU operates as a top-level state machine with three states:
 
 \begin{figure}[H]
 \centering
-\begin{tikzpicture}[node distance=2.5cm]
-  \node[statenode] (idle)   {IDLE};
-  \node[statenode, right=of idle] (moving) {MOVING};
-  \draw[statetransition, bend left=20]
-    (idle) edge node[above, font=\tiny, align=center]
-      {valve command\\received}
+\begin{tikzpicture}[node distance=3.0cm]
+  \node[statenode] (idle)     {VALVE\\IDLE};
+  \node[statenode, right=of idle]  (moving)   {VALVE\\MOVING};
+  \node[statenode, below=2.5cm of idle] (starting) {ENGINE\\STARTING};
+
+  % IDLE → MOVING
+  \draw[statetransition, bend left=15]
+    (idle) edge node[above, font=\tiny, align=center]{valve cmd\\received}
     (moving);
-  \draw[statetransition, bend left=20]
-    (moving) edge node[below, font=\tiny, align=center]
-      {pos. reached\\or timeout}
+  % MOVING → IDLE
+  \draw[statetransition, bend left=15]
+    (moving) edge node[below, font=\tiny, align=center]{move complete\\or timeout}
     (idle);
+  % MOVING self-loop
   \draw[statetransition, loop above, looseness=5]
-    (moving) edge node[above, font=\tiny] {still moving} (moving);
+    (moving) edge node[above, font=\tiny]{still moving}
+    (moving);
+  % IDLE → ENGINE_STARTING
+  \draw[statetransition, bend right=10]
+    (idle) edge node[left, font=\tiny, align=center]{START\_ENGINE\\or LCO button}
+    (starting);
+  % ENGINE_STARTING → IDLE
+  \draw[statetransition, bend right=10]
+    (starting) edge node[right, font=\tiny, align=center]{seq complete\\or RESET}
+    (idle);
 \end{tikzpicture}
-\caption{Deferred valve state machine.}
+\caption{EMU top-level state machine.  HEARTBEAT and RESET are processed in any
+         state.  All other commands are dropped during VALVE\_MOVING or
+         ENGINE\_STARTING.}
 \end{figure}
 
-A watchdog timer prevents the system from remaining in MOVING indefinitely
-if the servo stalls or the potentiometer fails.
+\subsection{Engine Start Sequence (7 Steps)}
+
+When \cmd{START\_ENGINE} or a LCO panel button press is received, the EMU
+enters \texttt{ENGINE\_STARTING} and advances through seven steps
+non-blockingly in \sw{Check\_Engine\_Start()}:
+
+\begin{center}
+\begin{tabular}{@{}clp{9cm}@{}}
+\toprule
+Step & Trigger & Action \\
+\midrule
+0 & immediate   & Verify Ox, Fuel, Dump valves are closed; abort on failure \\
+1 & step 0 pass & Command umbilical QR release; start 3~s separation timer \\
+2 & timer       & Poll \sw{isSeparated()}; abort on timeout \\
+3 & separation  & Fire igniter relay (\texttt{IGNITER\_FIRE\_DURATION\_MS} pulse);
+                  start delay-1 timer \\
+4 & delay-1     & Open Ox feed valve \\
+5 & Ox stopped  & Start delay-2 timer \\
+6 & delay-2     & Open Fuel feed valve \\
+7 & Fuel stopped& Send OK response; set \sw{engine\_running = true} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Any abort at steps 0--2 sends a \texttt{Command\_Return\_Packet} with
+\texttt{status = false} and an \texttt{r\_val} error code
+($-1$ = precondition failure, $-2$ = QR timeout).
+\cmd{RESET} cancels the sequence at any step.
 
 \subsection{Master\_Valve Class (\sw{KJO\_Master\_Valve})}
 
-\sw{Master\_Valve} extends \sw{Valve} with the CMD/STATUS GPIO handshake for
-the Fill valve.  On \sw{open()} or \sw{close()}, the class asserts
-\sig{AUX\_IO\_1} (CMD) and then polls \sig{AUX\_IO\_2} (STATUS) to confirm that
-the GSEMU has completed the commanded movement.  The GSEMU drives the servo;
-the EMU's \sw{Valve} base class is not used for Fill valve servo drive.
+\sw{Master\_Valve} implements the CMD/STATUS GPIO handshake for
+the Fill valve.  The Fill valve servo and pot reside on the GSEMU;
+the EMU controls it via \sig{AUX\_IO\_1} (CMD) and monitors
+\sig{AUX\_IO\_2} (STATUS).
 
 %═══════════════════════════════════════════════════════════════════════════════
 \section{Fill Valve Handshake Protocol}
@@ -240,26 +294,58 @@ Signal & Driver & Meaning when HIGH \\
 \textbf{Close sequence}: CMD de-asserted (LOW); GSEMU closes servo; STATUS driven LOW.
 
 %═══════════════════════════════════════════════════════════════════════════════
-\section{Command Dispatch (\sw{Execute\_Command})}
+\section{Command Dispatch}
 %═══════════════════════════════════════════════════════════════════════════════
 
-\sw{Check\_Radio()} receives and parses packets from the RCU.
-\cmd{HEARTBEAT} is handled directly and a \texttt{Heartbeat\_Response\_Packet}
-is returned immediately, containing EMU voltage and current servo positions.
-All other commands are dispatched through \sw{Execute\_Command(command\_ID, param)},
-which implements a \texttt{switch} on command code.  Commands with deferred
-completion (e.g., \cmd{DUMP}, \cmd{BEGIN\_FILL}) put the valve state machine
-into MOVING state; the acknowledgement is sent when the movement completes in
-\sw{Check\_Valve\_Move()}.
+\sw{Check\_Radio()} receives packets from the RCU and routes them.
+Commands are processed in priority order:
 
-\cmd{QR\_RELEASE} (code~25) is dispatched through \sw{Execute\_Command()} to
-\sw{QR\_Master::release()}, which drives \sig{AUX\_IO\_3} (\sig{QR\_CMD\_EIO})
-LOW to command the GSEMU servo to open the umbilical latch.  The CMD line
-remains LOW until \sw{hold()} is called or the system is reset.  The response
-is returned immediately; physical separation is confirmed asynchronously by
-polling \sw{QR\_Master::isSeparated()}, which reads \sig{AUX\_IO\_4}
-(\sig{RELEASE\_STATE\_EIO}) --- that line goes HIGH when the umbilical connector
-physically disconnects (INPUT\_PULLUP floats HIGH).
+\begin{enumerate}[nosep]
+  \item \cmd{HEARTBEAT} — always processed; returns
+        \texttt{Heartbeat\_Response\_Packet} with EMU voltage and
+        all four valve positions.
+  \item \cmd{RESET} — always processed regardless of state;
+        calls \sw{Execute\_Abort()}.
+  \item All other commands are \emph{dropped} if \texttt{emu\_state}
+        is VALVE\_MOVING or ENGINE\_STARTING.
+  \item Per-command interceptors (deferred valve moves, start sequence,
+        recording).
+  \item All remaining commands dispatched to \sw{Execute\_Command()}.
+\end{enumerate}
+
+\subsection{Command Table}
+
+\begin{center}
+\begin{tabular}{@{}lp{8.5cm}@{}}
+\toprule
+Command & EMU Action \\
+\midrule
+\cmd{HEARTBEAT}               & Respond with EMU voltage and all four valve positions \\
+\cmd{RESET}                   & Execute\_Abort(): all valves close, igniter off, buzzer off, recording off, indicator off \\
+\cmd{BEGIN\_FILL}             & Open Fill valve (Master\_Valve); start continuous pressure recording \\
+\cmd{STOP\_FILL}              & Close Fill valve; recording continues until ambient \\
+\cmd{DUMP}                    & Open Dump valve (deferred; sends response when complete) \\
+\cmd{STOP\_DUMP}              & Close Dump valve (deferred) \\
+\cmd{OPEN\_OXIDIZER\_FEED}    & Open Ox valve (deferred) \\
+\cmd{CLOSE\_OXIDIZER\_FEED}   & Close Ox valve (deferred) \\
+\cmd{OPEN\_FUEL\_FEED}        & Open Fuel valve (deferred) \\
+\cmd{CLOSE\_FUEL\_FEED}       & Close Fuel valve (deferred) \\
+\cmd{START\_ENGINE\_FLOWS}    & Close Fill; open Ox + Fuel simultaneously (deferred dual-valve) \\
+\cmd{STOP\_ENGINE\_FLOWS}     & Close Ox + Fuel simultaneously (deferred dual-valve) \\
+\cmd{START\_ENGINE}           & Arm 7-step ignition sequence (response sent asynchronously) \\
+\cmd{ENABLE\_LCO\_CONTROL}    & param $\neq$ 0: assert LAUNCH\_ENABLE\_EIO LOW, set \sw{lco\_enabled};
+                                param = 0: deassert HIGH, clear \sw{lco\_enabled} \\
+\cmd{START\_PRESSURE\_RECORDING} & Activate continuous sensor recording \\
+\cmd{STOP\_PRESSURE\_RECORDING}  & Deactivate continuous sensor recording \\
+\cmd{READ\_VALVE\_POSITION}   & Return current position (\%) of the valve specified in \texttt{param} \\
+\cmd{READ\_TANK\_PRESSURE}    & Return tank pressure (PSI) \\
+\cmd{READ\_CHAMBER\_PRESSURE} & Return chamber pressure (PSI) \\
+\cmd{READ\_TANK\_TEMP}        & Return tank temperature \\
+\cmd{READ\_CHAMBER\_TEMP}     & Return chamber temperature \\
+\cmd{QR\_RELEASE}             & Call \sw{QR\_Master::release()} (CMD LOW); response immediate \\
+\bottomrule
+\end{tabular}
+\end{center}
 
 %═══════════════════════════════════════════════════════════════════════════════
 \section{Umbilical Quick-Release (\sw{QR\_Master})}
@@ -279,8 +365,6 @@ that resides on the GSEMU.  It drives two MCP23X17 expansion I/O lines:
         removed (separation confirmed).
 \end{itemize}
 
-\subsection{Signal Protocol}
-
 \begin{center}
 \begin{tabular}{@{}lll@{}}
 \toprule
@@ -288,37 +372,6 @@ that resides on the GSEMU.  It drives two MCP23X17 expansion I/O lines:
 \midrule
 HIGH (default) & EMU & Latch engaged --- GSEMU servo held at hold position \\
 LOW            & EMU & Latch open --- GSEMU servo commanded to release position \\
-\bottomrule
-\end{tabular}
-\end{center}
-
-\sw{QR\_Master::begin()} configures \sig{QR\_CMD\_EIO} as OUTPUT and drives it
-HIGH on startup, so the GSEMU latch remains engaged until an explicit
-\cmd{QR\_RELEASE} command or \sw{release()} call is received.
-The safe default is therefore \emph{latch closed}: a disconnected or
-unpowered AUX connector cannot accidentally trigger a release.
-
-\subsection{Separation Detection}
-
-\sig{RELEASE\_STATE\_EIO} is configured as INPUT\_PULLUP and is wired to GSEMU
-GND through the umbilical connector.  When the umbilical is connected the line
-reads LOW.  When the connector is physically removed the INPUT\_PULLUP pulls
-the line HIGH.  \sw{QR\_Master::update()} (or any call to
-\sw{isSeparated()}) latches this transition; once latched it remains true for
-the remainder of the session.
-
-\subsection{QR\_Master API}
-
-\begin{center}
-\begin{tabular}{@{}ll@{}}
-\toprule
-Method & Action \\
-\midrule
-\sw{begin()}       & Configures CMD pin as OUTPUT (HIGH), state pin as INPUT\_PULLUP \\
-\sw{release()}     & Drives \sig{QR\_CMD\_EIO} LOW --- commands GSEMU to open latch \\
-\sw{hold()}        & Drives \sig{QR\_CMD\_EIO} HIGH --- commands GSEMU to hold latch \\
-\sw{isConnected()} & Returns true while \sig{RELEASE\_STATE\_EIO} reads LOW \\
-\sw{isSeparated()} & Returns true (latched) once state line has gone HIGH \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -332,6 +385,88 @@ opened mechanically.
 \end{warningbox}
 
 %═══════════════════════════════════════════════════════════════════════════════
+\section{Buzzer and Visual Indicator}
+%═══════════════════════════════════════════════════════════════════════════════
+
+\subsection{Startup Self-Test}
+
+At power-on, the buzzer fires \textbf{five short beeps} (75~ms on / 75~ms gap)
+to confirm the buzzer and relay circuits are functional.  The NeoPixel cycles
+red~$\to$ yellow~$\to$ green~$\to$ off as a pixel self-test.
+
+\subsection{NeoPixel Indicator State Machine}
+
+\sw{Check\_Indicator\_And\_Buzzer()} runs every loop iteration and updates the
+32-pixel NeoPixel array to reflect the highest-priority active condition.
+States are evaluated in descending priority:
+
+\begin{center}
+\begin{tabular}{@{}lllp{4.5cm}@{}}
+\toprule
+Priority & Condition & Pattern & Colour \\
+\midrule
+1 & \sw{engine\_running} = true      & Off (all pixels dark) & --- \\
+2 & \sw{emu\_state} = ENGINE\_STARTING & Solid                 & Red \\
+3 & \sw{tank\_pressurized} = true    & Flash 300/500~ms       & Red \\
+4 & \sw{link\_connected} = true      & Flash 300/1200~ms      & Green \\
+5 & (unlinked)                        & Flash 300/1200~ms      & Yellow \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\texttt{link\_connected} is set true on every received \cmd{HEARTBEAT} and
+cleared after 15~s of silence (loss-of-signal watchdog).
+\texttt{tank\_pressurized} is updated by \sw{Check\_Pressure\_Recording()}
+using the live tank pressure reading; the threshold is
+$>$\,\texttt{PRESSURE\_WARNING\_THRESHOLD} (15~PSI).
+
+\subsection{Buzzer Behaviour}
+
+\begin{center}
+\begin{tabular}{@{}lp{8.5cm}@{}}
+\toprule
+Condition & Buzzer Action \\
+\midrule
+Startup self-test            & 5 beeps (75~ms on, 75~ms gap) --- blocking, in \sw{setup()} \\
+Button press confirmation    & 1 or 2 short beeps (100~ms) via \sw{Beep()} \\
+Pressure alarm               & \textbf{Continuous tone} while tank\_pressurized = true \\
+Engine start / abort         & Alarm silenced immediately when \sw{Arm\_Engine\_Start()} or
+                               \sw{Execute\_Abort()} is called \\
+``I'm alive'' heartbeat      & Single 100~ms beep every 10~s; suppressed during alarm,
+                               ENGINE\_STARTING, and ENGINE\_RUNNING \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The pressure alarm is managed entirely within \sw{Check\_Indicator\_And\_Buzzer()}.
+When the indicator state transitions \emph{to} \texttt{IND\_PRESSURIZED},
+\sw{Buzzer.on()} is called (no timeout — continuous).
+When the state transitions \emph{away} from \texttt{IND\_PRESSURIZED},
+\sw{Buzzer.off()} is called.
+\sw{Arm\_Engine\_Start()} and \sw{Execute\_Abort()} both call
+\sw{Buzzer.off()} directly and clear the \sw{pressure\_alarm\_active} flag
+so the next \sw{Check\_Indicator\_And\_Buzzer()} call does not re-arm it.
+
+\subsection{NeoPixel\_Indicator API}
+
+\begin{center}
+\begin{tabular}{@{}ll@{}}
+\toprule
+Method & Action \\
+\midrule
+\sw{begin()}                             & Initialise hardware; clear all pixels \\
+\sw{on(color)}                           & Set all pixels solid; cancel any flash or timed mode \\
+\sw{onRed()} / \sw{onGreen()} / \sw{onYellow()} & Convenience wrappers \\
+\sw{onForTime(color, ms)}                & Solid for \texttt{ms} milliseconds; then off \\
+\sw{flash(color, on\_ms, off\_ms)}       & Periodic flash indefinitely; cancelled by \sw{on()} or \sw{off()} \\
+\sw{stopFlash()}                         & Stop flashing; turn off \\
+\sw{off()} / \sw{clear()}               & All pixels off; cancel flash/timed modes \\
+\sw{update()}                            & Service timed shutoff and flash state machine --- call from loop() \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+%═══════════════════════════════════════════════════════════════════════════════
 \section{Sensor Subsystems}
 %═══════════════════════════════════════════════════════════════════════════════
 
@@ -340,19 +475,27 @@ opened mechanically.
 \toprule
 Sensor & Class & ADC / Bus & Measurement \\
 \midrule
-Tank pressure transducer   & \sw{Pressure\_Transducer}   & ADS1015 ch0 & N\textsubscript{2}O tank pressure \\
-Chamber pressure transducer& \sw{Pressure\_Transducer}   & ADS1015 ch1 & Combustion chamber pressure \\
+Tank pressure transducer   & \sw{Pressure\_Transducer}   & ADS1015 ch0 & N\textsubscript{2}O tank pressure (PSI) \\
+Chamber pressure transducer& \sw{Pressure\_Transducer}   & ADS1015 ch1 & Combustion chamber pressure (PSI) \\
 Tank temperature sensor    & \sw{Temperature\_Transducer}& ADS1015 ch2 & N\textsubscript{2}O tank temperature \\
 Chamber temperature sensor & \sw{Temperature\_Transducer}& ADS1015 ch3 & Chamber wall temperature \\
-Thermocouple 1             & \sw{MAX31856}               & SPI         & TC1 (TBD location) \\
-Thermocouple 2             & \sw{MAX31856}               & SPI         & TC2 (TBD location) \\
+Thermocouple 1             & \sw{MAX31856}               & SPI         & TC1 (location TBD) \\
+Thermocouple 2             & \sw{MAX31856}               & SPI         & TC2 (location TBD) \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-All sensor reads are non-blocking; results are returned in
-\texttt{Command\_Return\_Packet.r\_val} in response to the corresponding
-\cmd{READ\_*} commands.
+\subsection{Continuous Pressure Recording}
+
+Continuous recording is started automatically by \cmd{BEGIN\_FILL} and may
+also be started manually with \cmd{START\_PRESSURE\_RECORDING}.
+Every \texttt{PRESSURE\_RECORDING\_INTERVAL\_MS} (250~ms) the EMU reads
+tank pressure, chamber pressure, tank temperature, and chamber temperature
+and appends all four values to the SD log.
+
+Recording auto-stops when the tank pressure remains below
+\texttt{PRESSURE\_AMBIENT\_THRESHOLD} (10~PSI) for four consecutive readings,
+or when \cmd{STOP\_PRESSURE\_RECORDING} or \cmd{RESET} is received.
 
 %═══════════════════════════════════════════════════════════════════════════════
 \section{SD Logging}
@@ -372,10 +515,13 @@ Version & Date & Notes \\
 \midrule
 0.1 & March 2026 & Initial release. \\
 0.2 & March 2026 & Add umbilical QR release subsystem (QR\_Master, QR\_RELEASE command, AUX\_IO\_3 protocol). \\
-0.3 & March 2026 & Level-based QR protocol (release=LOW, hold=HIGH); add RELEASE\_STATE\_EIO (AUX\_IO\_4),
-                   LAUNCH\_ENABLE\_EIO (AUX\_IO\_5), REMOTE\_START\_EIO (AUX\_IO\_6);
-                   Button~A reassigned to hold-to-open Dump valve;
-                   \sw{QR\_Master} API updated: \sw{release()}, \sw{hold()}, \sw{isSeparated()}, \sw{isConnected()}. \\
+0.3 & March 2026 & Level-based QR protocol (release=LOW, hold=HIGH); add RELEASE\_STATE\_EIO,
+                   LAUNCH\_ENABLE\_EIO, REMOTE\_START\_EIO; Button~A reassigned to hold-to-open
+                   Dump valve; QR\_Master API updated. \\
+0.4 & March 2026 & Full command dispatch table; ENGINE\_STARTING state added to state machine;
+                   7-step engine start sequence documented; new §7 Buzzer and Visual Indicator:
+                   5-beep startup, NeoPixel state machine (5 states/priorities), continuous
+                   pressure-alarm buzzer, 10~s alive beep, alarm silence on start/abort. \\
 \bottomrule
 \end{tabular}
 \end{center}

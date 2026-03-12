@@ -1,6 +1,6 @@
 \documentclass[11pt,letterpaper]{article}
 \input{../shared/KJO_preamble}
-\newcommand{\docversion}{0.1}
+\newcommand{\docversion}{0.2}
 \newcommand{\docdate}{March 2026}
 \lhead{\textsc{KJO Remote Control Unit}}
 \rhead{\textsc{RCU Reference} --- v\docversion}
@@ -108,7 +108,7 @@ Signal & Pin & Notes \\
 Module & Location & Responsibility \\
 \midrule
 \sw{main.cpp}          & local  & Setup, loop, command dispatch, GUI logic \\
-\sw{KJO\_RCU\_Display} & shared & TFT GUI: buttons, valve symbols, panels \\
+\sw{KJO\_RCU\_Display} & shared & TFT GUI: buttons, valve symbols, status panels \\
 \sw{KJO\_Radio}        & shared & Radio pin constants, frequency, power \\
 \sw{KJO\_Command\_Defs}& shared & Command codes, packet struct definitions \\
 \sw{KJO\_System\_Config}&shared & Version string, platform identifier \\
@@ -126,17 +126,19 @@ Module & Location & Responsibility \\
   \node[flowproc, below=of rx]     (hb)  {Check\_Act\_Heartbeat()};
   \node[flowproc, below=of hb]     (los) {Check\_For\_LOS()};
   \node[flowproc, below=of los]    (vlt) {Check\_Update\_Volts\\\_Link\_Time\_Temp()};
-  \node[flowproc, below=of vlt]    (btn) {Check\_Act\_Button\_Press()};
+  \node[flowproc, below=of vlt]    (prs) {Check\_Pressure\_Status()};
+  \node[flowproc, below=of prs]    (btn) {Check\_Act\_Button\_Press()};
   \node[flowproc, below=of btn]    (clr) {Check\_Clear\_Buttons()};
   \draw[flowarrow] (start)--(rx);
   \draw[flowarrow] (rx)--(hb);
   \draw[flowarrow] (hb)--(los);
   \draw[flowarrow] (los)--(vlt);
-  \draw[flowarrow] (vlt)--(btn);
+  \draw[flowarrow] (vlt)--(prs);
+  \draw[flowarrow] (prs)--(btn);
   \draw[flowarrow] (btn)--(clr);
   % Loop back
   \draw[flowarrow] (clr.south) -- ++(0,-0.4) -- ++(3.5,0)
-    -- ++(0, 7.5) -- (start.east);
+    -- ++(0, 8.5) -- (start.east);
 \end{tikzpicture}
 \caption{RCU main loop control flow.}
 \end{figure}
@@ -145,28 +147,32 @@ Module & Location & Responsibility \\
 \section{Operator Interface (GUI)}
 %═══════════════════════════════════════════════════════════════════════════════
 
-\subsection{Button Layout}
+\subsection{Button Layout and Behaviour}
 
-Six buttons are arranged in a 2$\times$3 grid on the left side of the screen:
+Six buttons are arranged in a 2$\times$3 grid on the left side of the screen.
+Each button sends one or more commands depending on its mode:
 
 \begin{center}
-\begin{tabular}{@{}llll@{}}
+\begin{tabular}{@{}lllp{7cm}@{}}
 \toprule
-Button & Row & Col & Command Sent \\
+Button & Row & Col & Behaviour \\
 \midrule
-Fill   & 1 & 1 & \cmd{BEGIN\_FILL} \\
-Dump   & 1 & 2 & \cmd{DUMP} (latching toggle; second press $\to$ \cmd{STOP\_DUMP}) \\
-Reset  & 2 & 1 & \cmd{RESET} \\
-Status & 2 & 2 & \cmd{RCU\_STATUS} \\
-Enable & 3 & 1 & \cmd{ENABLE\_LCO\_CONTROL} \\
-Launch & 3 & 2 & \cmd{START\_ENGINE} \\
+Fill    & 1 & 1 & \textbf{Latching toggle.} First press $\to$ \cmd{BEGIN\_FILL} (button stays highlighted).
+                  Second press $\to$ \cmd{STOP\_FILL} (button clears). \\
+Dump    & 1 & 2 & \textbf{Latching toggle.} First press $\to$ \cmd{DUMP} (button stays highlighted).
+                  Second press $\to$ \cmd{STOP\_DUMP} (button clears). \\
+Reset   & 2 & 1 & \textbf{Immediate ABORT.} Sends \cmd{RESET}; clears all latched button states
+                  (Fill, Dump, Enable). \\
+Status  & 2 & 2 & Sends \cmd{RCU\_STATUS}; auto-clears after 1~s. \\
+Enable  & 3 & 1 & \textbf{Hold-to-enable LCO.} Press sends \cmd{ENABLE\_LCO\_CONTROL} (param~=~1,
+                  button highlighted); finger-lift sends \cmd{ENABLE\_LCO\_CONTROL} (param~=~0,
+                  button clears). \\
+Launch  & 3 & 2 & \textbf{Guarded by confirmation dialog.} Press opens a modal CONFIRM / CANCEL
+                  overlay.  CONFIRM sends \cmd{START\_ENGINE}; CANCEL dismisses without sending.
+                  See §\ref{sec:confirm_dialog}. \\
 \bottomrule
 \end{tabular}
 \end{center}
-
-All buttons highlight on press and auto-clear after 1~second.
-The \textbf{Dump} button is an exception: it remains highlighted until a second
-press is detected (latching behaviour), confirming the dump is active.
 
 \subsection{Valve Status Indicators}
 
@@ -175,6 +181,10 @@ Fill, N\textsubscript{2}O (Ox), Fuel, and Dump.
 Each symbol uses a circle-and-bar motif: a vertical bar on a green disc
 indicates open; a horizontal bar on a red disc indicates closed.
 State is updated from the \cmd{HEARTBEAT} response packet.
+
+When the tank pressure exceeds \texttt{PRESSURE\_IN\_SYSTEM\_THRESHOLD}
+(as reported in heartbeat responses), the background of the valve panel
+turns \textbf{red} as a visual pressure warning (see §\ref{sec:pressure_warning}).
 
 \subsection{Status Panels}
 
@@ -189,6 +199,50 @@ State is updated from the \cmd{HEARTBEAT} response packet.
 \end{itemize}
 
 %═══════════════════════════════════════════════════════════════════════════════
+\section{Engine Start Confirmation Dialog}
+\label{sec:confirm_dialog}
+%═══════════════════════════════════════════════════════════════════════════════
+
+Pressing the \textbf{Launch} button does \emph{not} immediately send
+\cmd{START\_ENGINE}.  Instead, a modal overlay is drawn over the main screen
+with two large buttons:
+
+\begin{itemize}[nosep]
+  \item \textbf{CONFIRM} (green) --- sends \cmd{START\_ENGINE} to the EMU
+        and dismisses the overlay.
+  \item \textbf{CANCEL} (red) --- dismisses the overlay without transmitting
+        any command.
+\end{itemize}
+
+The overlay cannot be dismissed by touching outside of it; only CONFIRM or
+CANCEL can close it.  This prevents an accidental single touch from initiating
+the ignition sequence.
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{Pressure Warning}
+\label{sec:pressure_warning}
+%═══════════════════════════════════════════════════════════════════════════════
+
+\sw{Check\_Pressure\_Status()} is called every loop iteration.  It compares
+the most recent tank pressure value (carried in the heartbeat response packet's
+\texttt{r\_val} field, or from the last \cmd{READ\_TANK\_PRESSURE} response)
+against \texttt{PRESSURE\_IN\_SYSTEM\_THRESHOLD}.
+
+When pressure exceeds the threshold:
+\begin{itemize}[nosep]
+  \item The valve symbol panel background is redrawn in \textbf{red}.
+  \item A ``PRESSURISED'' warning label is displayed in the status area.
+\end{itemize}
+
+When pressure returns below the threshold (or a \cmd{RESET} response is
+received), the panel background returns to its normal colour and the warning
+label is cleared.
+
+This visual warning mirrors the EMU-side audible pressure alarm (continuous
+buzzer on the EMU) so the operator at the RCU can immediately see that the
+propellant system is under pressure.
+
+%═══════════════════════════════════════════════════════════════════════════════
 \section{Radio Command Dispatch}
 %═══════════════════════════════════════════════════════════════════════════════
 
@@ -200,6 +254,26 @@ packet.  \cmd{HEARTBEAT} uses the \texttt{Heartbeat\_Command\_Packet} structure
 Responses are parsed in \sw{Check\_and\_Process\_Receive\_Packet()}.
 The \cmd{HEARTBEAT} response is routed to \sw{Process\_Heartbeat\_Response()},
 which updates EMU voltage and all four valve symbols.
+
+\subsection{Command Reference}
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Command & Sent by & Notes \\
+\midrule
+\cmd{HEARTBEAT}               & Automatic (every 5~s) & RCU voltage in payload; EMU returns all valve positions \\
+\cmd{RESET}                   & Reset button          & ABORT; clears all latched button states on RCU \\
+\cmd{BEGIN\_FILL}             & Fill button (1st press) & Starts propellant fill; EMU starts pressure recording \\
+\cmd{STOP\_FILL}              & Fill button (2nd press) & Stops propellant fill; recording continues until ambient \\
+\cmd{DUMP}                    & Dump button (1st press) & Opens Dump valve \\
+\cmd{STOP\_DUMP}              & Dump button (2nd press) & Closes Dump valve \\
+\cmd{ENABLE\_LCO\_CONTROL}    & Enable button (hold / release) & param 1 = enable LCO remote start; param 0 = disable \\
+\cmd{START\_ENGINE}           & Launch + CONFIRM        & Arms 7-step ignition sequence on EMU \\
+\cmd{RCU\_STATUS}             & Status button           & Requests EMU status summary \\
+\bottomrule
+\end{tabular}
+\end{center}
 
 %═══════════════════════════════════════════════════════════════════════════════
 \section{SD Logging}
@@ -222,6 +296,12 @@ records all TX and RX events in human-readable form, e.g.:
 Version & Date & Notes \\
 \midrule
 0.1 & March 2026 & Initial release. \\
+0.2 & March 2026 & Button table updated: FILL and DUMP are latching toggles; Reset is immediate
+                   ABORT and clears all latched states; Enable is hold-to-enable LCO (lift = disable);
+                   Launch guarded by confirmation dialog.
+                   Main loop diagram updated to include \sw{Check\_Pressure\_Status()}.
+                   New §4 Engine Start Confirmation Dialog.
+                   New §5 Pressure Warning (valve panel background turns red). \\
 \bottomrule
 \end{tabular}
 \end{center}
