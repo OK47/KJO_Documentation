@@ -1,6 +1,6 @@
 \documentclass[11pt,letterpaper]{article}
 \input{../shared/KJO_preamble}
-\newcommand{\docversion}{0.4}
+\newcommand{\docversion}{0.5}
 \newcommand{\docdate}{March 2026}
 \lhead{\textsc{KJO Engine Management Unit}}
 \rhead{\textsc{EMU Reference} --- v\docversion}
@@ -37,7 +37,7 @@ Microcontroller   & Adafruit Feather M0 (ATSAMD21G18A, 48~MHz)  & ---     & \\
 OLED Display      & SH1107, 128$\times$64, 1.12\textquotedbl      & I\textsuperscript{2}C & \\
 GPIO Expander     & MCP23X17 (16 I/O)                            & I\textsuperscript{2}C & Relays, buttons, AUX\_IO \\
 PWM Servo Wing    & Adafruit 8-channel wing (PCA9685)            & I\textsuperscript{2}C & Ox, Fuel, Dump servos \\
-ADC               & ADS1015 (12-bit, 4-ch)                       & I\textsuperscript{2}C & Battery + AUX A/D \\
+ADC               & ADS1015 (12-bit, 4-ch)                       & I\textsuperscript{2}C & Ch0: unassigned; Ch1: chamber pressure; Ch2: tank pressure; Ch3: battery voltage \\
 Thermocouple IF   & MAX31856 (2$\times$)                         & SPI     & TC1, TC2 \\
 Real-Time Clock   & PCF8523                                      & I\textsuperscript{2}C & \\
 LoRa Radio        & HopeRF RFM95W (Semtech SX1276), 915~MHz      & SPI     & \\
@@ -257,6 +257,61 @@ Any abort at steps 0--2 sends a \texttt{Command\_Return\_Packet} with
 ($-1$ = precondition failure, $-2$ = QR timeout).
 \cmd{RESET} cancels the sequence at any step.
 
+\subsection{Servo Mechanical Geometry and Calibration}
+
+\subsubsection*{Gear Train and Servo Travel}
+
+Each valve is actuated by a ServoCity 2000-0025-0504 5-turn servo through a
+16-tooth pinion driving a 60-tooth valve gear:
+
+\begin{center}
+\begin{tabular}{@{}ll@{}}
+\toprule
+Parameter & Value \\
+\midrule
+Gear ratio                             & $60 \div 16 = \mathbf{3.75:1}$ \\
+Valve travel (open $\to$ close)        & 90\textdegree \\
+Required servo rotation                & $90 \times 3.75 = 337.5$\textdegree \\
+Servo full mechanical range            & 1800\textdegree\ (5 turns) over 500--2500~$\mu$s \\
+PCA9685 frequency                      & 1100~Hz (non-standard; improves count resolution) \\
+PWM period at 1100~Hz                  & $1 \div 1100 = 909.09~\mu$s \\
+$\mu$s per 12-bit count                & $909.09 \div 4096 \approx 0.2219~\mu$s/count \\
+$\mu$s for 337.5\textdegree\ servo travel& $337.5 \times (2000~\mu\text{s} \div 1800\textdegree) = 375~\mu$s \\
+\textbf{Theoretical $\Delta$ counts}   & $375 \div 0.2219 \approx \mathbf{1690}$ counts \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{notebox}
+Running the PCA9685 at 1100~Hz (instead of the standard 50~Hz) compresses the
+usable pulse-width span into the lower portion of the 12-bit count range,
+effectively improving resolution over the $\sim$1.1 turns of servo travel
+actually used.
+\end{notebox}
+
+\subsubsection*{Empirical Calibration (March 2026)}
+
+Bench testing showed the theoretical 1690-count span caused all four valves to
+travel noticeably \emph{more} than 90\textdegree.  All four valves were
+re-calibrated.  The empirical open-to-close deltas average $\approx$1583~counts
+($\sim$6\% below theoretical), consistent with the servo being slightly more
+sensitive in the operating band than the linear model predicts.
+
+\begin{center}
+\begin{tabular}{@{}lrrrrrrrr@{}}
+\toprule
+Valve & \multicolumn{4}{c}{Servo PWM (12-bit counts)} & \multicolumn{3}{c}{Pot ADC (12-bit counts)} \\
+\cmidrule(lr){2-5}\cmidrule(lr){6-8}
+ & Open & Close & $\Delta$ & Implied travel & Open & Closed & $\Delta$ \\
+\midrule
+Fill     & 2179 & 3719 & 1540 & $\sim$82.1\textdegree & 1238 & 2984 & 1746 \\
+Oxidizer & 2050 & 3690 & 1640 & $\sim$87.4\textdegree & 1139 & 2857 & 1718 \\
+Fuel     & 2130 & 3780 & 1650 & $\sim$87.9\textdegree & 1170 & 2918 & 1748 \\
+Dump     & 2229 & 3729 & 1500 & $\sim$79.9\textdegree & 1329 & 3055 & 1726 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
 \subsection{Master\_Valve Class (\sw{KJO\_Master\_Valve})}
 
 \sw{Master\_Valve} implements the CMD/STATUS GPIO handshake for
@@ -475,12 +530,53 @@ Method & Action \\
 \toprule
 Sensor & Class & ADC / Bus & Measurement \\
 \midrule
-Tank pressure transducer   & \sw{Pressure\_Transducer}   & ADS1015 ch0 & N\textsubscript{2}O tank pressure (PSI) \\
-Chamber pressure transducer& \sw{Pressure\_Transducer}   & ADS1015 ch1 & Combustion chamber pressure (PSI) \\
-Tank temperature sensor    & \sw{Temperature\_Transducer}& ADS1015 ch2 & N\textsubscript{2}O tank temperature \\
-Chamber temperature sensor & \sw{Temperature\_Transducer}& ADS1015 ch3 & Chamber wall temperature \\
+Chamber pressure transducer& \sw{Pressure\_Transducer}   & ADS1015 ch1 & Combustion chamber pressure, 0--200~PSI \\
+Tank pressure transducer   & \sw{Pressure\_Transducer}   & ADS1015 ch2 & N\textsubscript{2}O tank pressure, 0--1000~PSI \\
+Battery voltage            & ---                         & ADS1015 ch3 & LiPo pack voltage (via resistor divider) \\
+Tank temperature sensor    & \sw{Temperature\_Transducer}& Onboard ADC (A0) & N\textsubscript{2}O tank temperature$^{\dagger}$ \\
+Chamber temperature sensor & \sw{Temperature\_Transducer}& Onboard ADC (A5) & Chamber wall temperature$^{\dagger}$ \\
 Thermocouple 1             & \sw{MAX31856}               & SPI         & TC1 (location TBD) \\
 Thermocouple 2             & \sw{MAX31856}               & SPI         & TC2 (location TBD) \\
+\bottomrule
+\multicolumn{4}{@{}l}{\small $^{\dagger}$Onboard ADC channel assignments are placeholders pending hardware schematic confirmation.} \\
+\end{tabular}
+\end{center}
+
+\subsection{Pressure Transducer Signal Chain}
+
+Each pressure transducer produces a ratiometric voltage output over
+0.5--4.5~V corresponding to 0--full-scale PSI.  A voltage divider on the
+A/D daughter board scales this to the ADS1015 input range:
+
+\[
+V_\text{ADC} = V_\text{transducer} \times \frac{3.3}{4.5}
+\]
+
+\begin{center}
+\begin{tabular}{@{}lrrl@{}}
+\toprule
+Condition & Transducer (V) & After divider (V) & ADS1015 count (GAIN\_ONE) \\
+\midrule
+0 PSI (zero offset)  & 0.500 & 0.367 & $\approx$ \textbf{184} \\
+Full-scale PSI       & 4.500 & 3.300 & $\approx$ \textbf{1657} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+ADS1015 at \texttt{GAIN\_ONE} ($\pm$4.096~V): $\approx$0.001991~V/count.
+The two-point linear \sw{map()} in \sw{Pressure\_Sensor\_Average()} implicitly
+performs all three conversion steps (undo divider, subtract 0.5~V offset,
+scale 0--4~V to PSI) without explicit voltage arithmetic.
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+Constant & Value & Meaning \\
+\midrule
+\sw{PRESSURE\_MIN\_READING} & 184  & ADS1015 counts at 0~PSI (0.500~V transducer) \\
+\sw{PRESSURE\_MAX\_READING} & 1657 & ADS1015 counts at full-scale PSI (4.500~V transducer) \\
+\sw{CHAMBER\_MAX\_PSI}      & 200  & Chamber transducer full-scale (PSI) \\
+\sw{TANK\_MAX\_PSI}         & 1000 & Tank transducer full-scale (PSI) \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -522,6 +618,14 @@ Version & Date & Notes \\
                    7-step engine start sequence documented; new §7 Buzzer and Visual Indicator:
                    5-beep startup, NeoPixel state machine (5 states/priorities), continuous
                    pressure-alarm buzzer, 10~s alive beep, alarm silence on start/abort. \\
+0.5 & March 2026 & Valve servo calibration: added §3 servo geometry subsection (gear ratio
+                   3.75:1, 1100~Hz PCA9685, $\approx$1690 theoretical counts for 90\textdegree)
+                   and empirical per-valve calibration table (all four valves re-calibrated on
+                   bench). Pressure transducer fix: corrected ADS1015 channel assignments
+                   (chamber = ch1/200~PSI, tank = ch2/1000~PSI), corrected sensor table
+                   (temperature sensors use onboard ADC A0/A5, not ADS1015), added §7 signal
+                   chain subsection documenting voltage divider and calibration endpoint counts
+                   (184/1657). \\
 \bottomrule
 \end{tabular}
 \end{center}
