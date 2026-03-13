@@ -18,8 +18,8 @@
 *.ilg
 *.bak
 
-# Generated PDFs — compile locally; do not commit binaries
-*.pdf
+# Generated PDFs — commit final output PDFs alongside their .tex sources
+# (build artefacts above are still excluded)
 
 # TeXworks / MiKTeX local files
 *.texpadtmp
