@@ -1,6 +1,6 @@
 \documentclass[11pt,letterpaper]{article}
 \input{../shared/KJO_preamble}
-\newcommand{\docversion}{0.3}
+\newcommand{\docversion}{0.4}
 \newcommand{\docdate}{March 2026}
 \lhead{\textsc{KJO GSE Management Unit}}
 \rhead{\textsc{GSEMU Reference} --- v\docversion}
@@ -346,9 +346,10 @@ The SH1107 OLED provides local status when no serial console is available.
 \section{SD Logging}
 %═══════════════════════════════════════════════════════════════════════════════
 
-Log files are stored in \texttt{GSEMU\_Logs/Log\_N.txt}.  Each record is
-time-stamped (PCF8523) and logs CMD/STATUS transitions, servo position
-changes, button presses, and system events.
+Log files are stored in the root of the SD card as \texttt{Log\_N.txt}
+(N is auto-incremented to avoid overwriting existing files).
+Each record is time-stamped (PCF8523) and logs CMD/STATUS transitions, servo
+position changes, button presses, and system events.
 
 %═══════════════════════════════════════════════════════════════════════════════
 \section{Version History}
@@ -366,6 +367,9 @@ Version & Date & Notes \\
                    Button~C now opens Fill valve; \sw{QR\_Slave} API adds \sw{localRelease()},
                    \sw{localHold()}, \sw{isLocalOverride()}, \sw{isSeparated()}, \sw{isConnected()};
                    \sw{Check\_AUX\_Input()} drives gated Remote Start output. \\
+0.4 & March 2026 & SD log files moved to SD card root (\texttt{Log\_N.txt}); subdirectory path
+                   constant (\texttt{LOG\_FILE\_FOLDER}) removed from \sw{KJO\_Logging.h} and
+                   \sw{KJO\_GSE\_Display}. \\
 \bottomrule
 \end{tabular}
 \end{center}

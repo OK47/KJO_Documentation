@@ -1,6 +1,6 @@
 \documentclass[11pt,letterpaper]{article}
 \input{../shared/KJO_preamble}
-\newcommand{\docversion}{0.2}
+\newcommand{\docversion}{0.3}
 \newcommand{\docdate}{March 2026}
 \lhead{\textsc{KJO Remote Control Unit}}
 \rhead{\textsc{RCU Reference} --- v\docversion}
@@ -279,9 +279,10 @@ Command & Sent by & Notes \\
 \section{SD Logging}
 %═══════════════════════════════════════════════════════════════════════════════
 
-Log files are stored in \texttt{RCU\_Logs/Log\_N.txt} (N incremented to avoid
-overwriting existing logs).  Each entry is time-stamped from the DS3231 and
-records all TX and RX events in human-readable form, e.g.:
+Log files are stored in the root of the SD card as \texttt{Log\_N.txt}
+(N is auto-incremented to avoid overwriting existing files).
+Each entry is time-stamped from the DS3231 and records all TX and RX events
+in human-readable form, e.g.:
 \begin{lstlisting}[language={},numbers=none]
 10:15:03 [TX] BEGIN_FILL (1) | param: 0
 10:15:03 [RX] BEGIN_FILL (1) | status: OK | r_val: 0 | RSSI: -72
@@ -302,6 +303,8 @@ Version & Date & Notes \\
                    Main loop diagram updated to include \sw{Check\_Pressure\_Status()}.
                    New §4 Engine Start Confirmation Dialog.
                    New §5 Pressure Warning (valve panel background turns red). \\
+0.3 & March 2026 & SD log files moved to SD card root (\texttt{Log\_N.txt}); subdirectory path
+                   constant (\texttt{LOG\_FILE\_FOLDER}) removed from \sw{main.cpp}. \\
 \bottomrule
 \end{tabular}
 \end{center}

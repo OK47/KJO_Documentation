@@ -1,6 +1,6 @@
 \documentclass[11pt,letterpaper]{article}
 \input{../shared/KJO_preamble}
-\newcommand{\docversion}{0.5}
+\newcommand{\docversion}{0.6}
 \newcommand{\docdate}{March 2026}
 \lhead{\textsc{KJO Engine Management Unit}}
 \rhead{\textsc{EMU Reference} --- v\docversion}
@@ -597,9 +597,10 @@ or when \cmd{STOP\_PRESSURE\_RECORDING} or \cmd{RESET} is received.
 \section{SD Logging}
 %═══════════════════════════════════════════════════════════════════════════════
 
-Log files are stored in \texttt{EMU\_Logs/Log\_N.txt}.  Each record is
-time-stamped (PCF8523) and records command receipt, valve movements, sensor
-readings, and fault events.
+Log files are stored in the root of the SD card as \texttt{Log\_N.txt}
+(N is auto-incremented to avoid overwriting existing files).
+Each record is time-stamped (PCF8523) and records command receipt, valve
+movements, sensor readings, and fault events.
 
 %═══════════════════════════════════════════════════════════════════════════════
 \section{Version History}
@@ -626,6 +627,9 @@ Version & Date & Notes \\
                    (temperature sensors use onboard ADC A0/A5, not ADS1015), added §7 signal
                    chain subsection documenting voltage divider and calibration endpoint counts
                    (184/1657). \\
+0.6 & March 2026 & SD log files moved to SD card root (\texttt{Log\_N.txt}); subdirectory path
+                   constants (\texttt{LOG\_FILE\_FOLDER}, \texttt{LOG\_FILE\_DIR}) removed from
+                   \sw{KJO\_Logging.h} and \sw{KJO\_EMU\_Display}. \\
 \bottomrule
 \end{tabular}
 \end{center}
