@@ -36,7 +36,7 @@ Component & Part & Interface & Notes \\
 Microcontroller   & Adafruit Feather M0 (ATSAMD21G18A, 48~MHz)  & ---     & \\
 OLED Display      & SH1107, 128$\times$64, 1.12\textquotedbl      & I\textsuperscript{2}C & \\
 GPIO Expander     & MCP23X17 (16 I/O)                            & I\textsuperscript{2}C & Relays, buttons, AUX\_IO \\
-PWM Servo Wing    & Adafruit 8-channel wing (PCA9685)            & I\textsuperscript{2}C & Ox, Fuel, Dump servos \\
+PWM Servo Wing    & Adafruit 8-channel wing (PCA9685)            & I\textsuperscript{2}C & Ox, Fuel servos \\
 ADC               & ADS1015 (12-bit, 4-ch)                       & I\textsuperscript{2}C & Ch0: unassigned; Ch1: chamber pressure; Ch2: tank pressure; Ch3: battery voltage \\
 Thermocouple IF   & MAX31856 (2$\times$)                         & SPI     & TC1, TC2 \\
 Real-Time Clock   & PCF8523                                      & I\textsuperscript{2}C & \\
@@ -57,7 +57,7 @@ Battery           & 3.7~V LiPo; voltage divider on ADS1015       & ADC     & \\
 \toprule
 Pin Name & Direction & Function \\
 \midrule
-\sig{BUTTON\_A\_EIO}                              & IN  & Front-panel button A (hold-to-open Dump valve) \\
+\sig{BUTTON\_A\_EIO}                              & IN  & Front-panel button A (hold-to-open Ox valve, dumps via chamber) \\
 \sig{BUTTON\_B\_EIO}                              & IN  & Front-panel button B (close Fill valve) \\
 \sig{BUTTON\_C\_EIO}                              & IN  & Front-panel button C (open Fill valve) \\
 \sig{IGNITER\_EIO}                                & OUT & Igniter relay drive \\
@@ -239,7 +239,7 @@ non-blockingly in \sw{Check\_Engine\_Start()}:
 \toprule
 Step & Trigger & Action \\
 \midrule
-0 & immediate   & Verify Ox, Fuel, Dump valves are closed; abort on failure \\
+0 & immediate   & Verify Ox and Fuel valves are closed; abort on failure \\
 1 & step 0 pass & Command umbilical QR release; start 3~s separation timer \\
 2 & timer       & Poll \sw{isSeparated()}; abort on timeout \\
 3 & separation  & Fire igniter relay (\texttt{IGNITER\_FIRE\_DURATION\_MS} pulse);
@@ -292,9 +292,9 @@ actually used.
 \subsubsection*{Empirical Calibration (March 2026)}
 
 Bench testing showed the theoretical 1690-count span caused all four valves to
-travel noticeably \emph{more} than 90\textdegree.  All four valves were
-re-calibrated.  The empirical open-to-close deltas average $\approx$1583~counts
-($\sim$6\% below theoretical), consistent with the servo being slightly more
+travel noticeably \emph{more} than 90\textdegree.  All three valves were
+re-calibrated.  The empirical open-to-close deltas average $\approx$1610~counts
+($\sim$5\% below theoretical), consistent with the servo being slightly more
 sensitive in the operating band than the linear model predicts.
 
 \begin{center}
@@ -307,7 +307,6 @@ Valve & \multicolumn{4}{c}{Servo PWM (12-bit counts)} & \multicolumn{3}{c}{Pot A
 Fill     & 2179 & 3719 & 1540 & $\sim$82.1\textdegree & 1238 & 2984 & 1746 \\
 Oxidizer & 2050 & 3690 & 1640 & $\sim$87.4\textdegree & 1139 & 2857 & 1718 \\
 Fuel     & 2130 & 3780 & 1650 & $\sim$87.9\textdegree & 1170 & 2918 & 1748 \\
-Dump     & 2229 & 3729 & 1500 & $\sim$79.9\textdegree & 1329 & 3055 & 1726 \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -358,7 +357,7 @@ Commands are processed in priority order:
 \begin{enumerate}[nosep]
   \item \cmd{HEARTBEAT} — always processed; returns
         \texttt{Heartbeat\_Response\_Packet} with EMU voltage and
-        all four valve positions.
+        all three valve positions.
   \item \cmd{RESET} — always processed regardless of state;
         calls \sw{Execute\_Abort()}.
   \item All other commands are \emph{dropped} if \texttt{emu\_state}
@@ -375,12 +374,12 @@ Commands are processed in priority order:
 \toprule
 Command & EMU Action \\
 \midrule
-\cmd{HEARTBEAT}               & Respond with EMU voltage and all four valve positions \\
-\cmd{RESET}                   & Execute\_Abort(): all valves close, igniter off, buzzer off, recording off, indicator off \\
+\cmd{HEARTBEAT}               & Respond with EMU voltage and all three valve positions \\
+\cmd{RESET}                   & Execute\_Abort(): Fill/Fuel close, Ox opens (dump), igniter off, buzzer off, recording off, indicator off \\
 \cmd{BEGIN\_FILL}             & Open Fill valve (Master\_Valve); start continuous pressure recording \\
 \cmd{STOP\_FILL}              & Close Fill valve; recording continues until ambient \\
-\cmd{DUMP}                    & Open Dump valve (deferred; sends response when complete) \\
-\cmd{STOP\_DUMP}              & Close Dump valve (deferred) \\
+\cmd{DUMP}                    & Open Ox valve to vent pressurant through the chamber (deferred; sends response when complete; no dedicated Dump valve) \\
+\cmd{STOP\_DUMP}              & Close Ox valve (deferred) \\
 \cmd{OPEN\_OXIDIZER\_FEED}    & Open Ox valve (deferred) \\
 \cmd{CLOSE\_OXIDIZER\_FEED}   & Close Ox valve (deferred) \\
 \cmd{OPEN\_FUEL\_FEED}        & Open Fuel valve (deferred) \\
@@ -630,6 +629,12 @@ Version & Date & Notes \\
 0.6 & March 2026 & SD log files moved to SD card root (\texttt{Log\_N.txt}); subdirectory path
                    constants (\texttt{LOG\_FILE\_FOLDER}, \texttt{LOG\_FILE\_DIR}) removed from
                    \sw{KJO\_Logging.h} and \sw{KJO\_EMU\_Display}. \\
+0.7 & July 2026  & Dump valve physically removed from the vehicle; pressurant is now dumped
+                   through the combustion chamber via the Ox valve. \cmd{DUMP}/\cmd{STOP\_DUMP}
+                   retained but now target the Ox valve; \sw{Execute\_Abort()} closes Fill/Fuel
+                   and opens Ox (instead of closing all valves); Button~A reassigned to
+                   hold-to-open the Ox valve; \texttt{dump\_pct} removed from
+                   \texttt{Heartbeat\_Response\_Packet}. \\
 \bottomrule
 \end{tabular}
 \end{center}

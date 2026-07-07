@@ -176,11 +176,14 @@ Launch  & 3 & 2 & \textbf{Guarded by confirmation dialog.} Press opens a modal C
 
 \subsection{Valve Status Indicators}
 
-Four valve symbols occupy the right portion of the screen:
-Fill, N\textsubscript{2}O (Ox), Fuel, and Dump.
+Three valve symbols occupy the right portion of the screen:
+Fill, N\textsubscript{2}O (Ox), and Fuel.
 Each symbol uses a circle-and-bar motif: a vertical bar on a green disc
 indicates open; a horizontal bar on a red disc indicates closed.
-State is updated from the \cmd{HEARTBEAT} response packet.
+State is updated from the \cmd{HEARTBEAT} response packet.  There is no
+dedicated Dump indicator --- the \cmd{DUMP} command opens the Ox valve
+(vents pressurant through the chamber), so its state is reflected on the
+Ox indicator.
 
 When the tank pressure exceeds \texttt{PRESSURE\_IN\_SYSTEM\_THRESHOLD}
 (as reported in heartbeat responses), the background of the valve panel
@@ -266,8 +269,8 @@ Command & Sent by & Notes \\
 \cmd{RESET}                   & Reset button          & ABORT; clears all latched button states on RCU \\
 \cmd{BEGIN\_FILL}             & Fill button (1st press) & Starts propellant fill; EMU starts pressure recording \\
 \cmd{STOP\_FILL}              & Fill button (2nd press) & Stops propellant fill; recording continues until ambient \\
-\cmd{DUMP}                    & Dump button (1st press) & Opens Dump valve \\
-\cmd{STOP\_DUMP}              & Dump button (2nd press) & Closes Dump valve \\
+\cmd{DUMP}                    & Dump button (1st press) & Opens Ox valve; vents pressurant through the chamber (no dedicated Dump valve) \\
+\cmd{STOP\_DUMP}              & Dump button (2nd press) & Closes Ox valve \\
 \cmd{ENABLE\_LCO\_CONTROL}    & Enable button (hold / release) & param 1 = enable LCO remote start; param 0 = disable \\
 \cmd{START\_ENGINE}           & Launch + CONFIRM        & Arms 7-step ignition sequence on EMU \\
 \cmd{RCU\_STATUS}             & Status button           & Requests EMU status summary \\
@@ -305,6 +308,10 @@ Version & Date & Notes \\
                    New §5 Pressure Warning (valve panel background turns red). \\
 0.3 & March 2026 & SD log files moved to SD card root (\texttt{Log\_N.txt}); subdirectory path
                    constant (\texttt{LOG\_FILE\_FOLDER}) removed from \sw{main.cpp}. \\
+0.4 & July 2026  & Dump valve physically removed from the vehicle. \cmd{DUMP}/\cmd{STOP\_DUMP}
+                   retained (still a latching toggle) but now open/close the Ox valve instead of
+                   a dedicated Dump valve; the separate Dump valve status indicator was removed
+                   and its state folded into the Ox indicator. \\
 \bottomrule
 \end{tabular}
 \end{center}

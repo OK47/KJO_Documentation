@@ -66,20 +66,6 @@
 \draw[pipe] (chkv.south)   -- (tjunc);
 
 %────────────────────────────────────────────────────────────────────
-% DUMP BRANCH (horizontal, left of T-junction)
-%────────────────────────────────────────────────────────────────────
-\node[emuval, minimum width=2.2cm] (dumpv) at (-2.0, 3.0) {Dump Valve};
-\node[font=\tiny, text=KJOred, below=1pt of dumpv] {EMU servo};
-
-% Vent arrow
-\draw[-{Stealth[length=7pt,width=5pt]}, line width=2pt, draw=KJOgray!70]
-  (dumpv.west) -- +(-1.5, 0)
-  node[anchor=east, font=\footnotesize, text=KJOgray] {Vent};
-
-% Pipe: T-junction → dump valve
-\draw[pipe] (tjunc) -- (dumpv.east);
-
-%────────────────────────────────────────────────────────────────────
 % N2O OXIDIZER TANK (rocket)
 %────────────────────────────────────────────────────────────────────
 \node[n2otank, minimum height=2.8cm] (n2otank) at (2, 0.9) {N$_2$O\\Oxidizer\\Tank};
@@ -111,6 +97,8 @@
 \node[emuval, minimum width=2.4cm] (oxv) at (2, -1.8) {Ox Feed Valve};
 \node[font=\tiny, text=KJOred, above right=-1pt and 2pt of oxv]
   {EMU servo, proportional};
+\node[font=\tiny, text=KJOgray, below=1pt of oxv]
+  {also serves DUMP (vents through chamber)};
 
 \draw[oxpipe] (n2otank.south) -- (oxv.north);
 % Arrow into chamber inlet

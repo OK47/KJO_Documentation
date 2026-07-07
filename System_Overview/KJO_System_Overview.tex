@@ -37,8 +37,8 @@ cooling.  Three autonomous microcontroller units share control responsibilities:
         Sends commands over a 900~MHz LoRa radio link; displays system status
         on a 3.5\textquotedbl\ colour touchscreen.
   \item \textbf{Engine Management Unit (EMU)} --- mounted in the rocket.
-        Receives commands from the RCU, actuates the Oxidizer Feed, Fuel Feed,
-        and Dump servos, reads all sensors, and coordinates the Fill valve
+        Receives commands from the RCU, actuates the Oxidizer Feed and Fuel Feed
+        servos, reads all sensors, and coordinates the Fill valve
         with the GSEMU.
   \item \textbf{GSE Management Unit (GSEMU)} --- mounted on the launch pad.
         Controls the Fill valve servo and the umbilical quick-release servo;
@@ -96,10 +96,10 @@ Figure~\ref{fig:propellant} shows the propellant system schematic.
 
 \subsection{Dump / Safe Procedure}
 
-The \cmd{DUMP} command opens the Dump valve (servo, EMU-controlled), venting
-the on-board N\textsubscript{2}O tank to atmosphere via a vent line.  The RCU
-Dump button has latching behaviour --- a second press sends \cmd{STOP\_DUMP}
-and closes the valve.
+The \cmd{DUMP} command opens the Oxidizer Feed valve (EMU-controlled), venting
+the on-board N\textsubscript{2}O tank pressurant through the combustion chamber.
+There is no dedicated Dump valve.  The RCU Dump button has latching behaviour
+--- a second press sends \cmd{STOP\_DUMP} and closes the Oxidizer Feed valve.
 
 \subsection{Pressurization}
 
@@ -205,8 +205,8 @@ Code & Name & Direction & \texttt{param} & Description \\
  6 & \cmd{CLOSE\_FUEL\_FEED}     & RCU$\to$EMU & ---   & Close Fuel Feed valve \\
  7 & \cmd{OXIDIZER\_FLOW\_PROP}  & RCU$\to$EMU & \%    & Set Ox valve position (0--100\%) \\
  8 & \cmd{FUEL\_FLOW\_PROP}      & RCU$\to$EMU & \%    & Set Fuel valve position (0--100\%) \\
- 9 & \cmd{DUMP}                  & RCU$\to$EMU & ---   & Open Dump valve; vent oxidizer \\
-10 & \cmd{STOP\_DUMP}            & RCU$\to$EMU & ---   & Close Dump valve \\
+ 9 & \cmd{DUMP}                  & RCU$\to$EMU & ---   & Open Ox valve; vent pressurant through chamber \\
+10 & \cmd{STOP\_DUMP}            & RCU$\to$EMU & ---   & Close Ox valve \\
 11 & \cmd{START\_ENGINE\_FLOWS}  & RCU$\to$EMU & ---   & Open both feed valves simultaneously \\
 12 & \cmd{STOP\_ENGINE\_FLOWS}   & RCU$\to$EMU & ---   & Close both feed valves simultaneously \\
 13 & \cmd{ENABLE\_LCO\_CONTROL}  & RCU$\to$EMU & ---   & Enable launch authority \\
