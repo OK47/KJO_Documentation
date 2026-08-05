@@ -511,9 +511,7 @@ Method & Action \\
 \sw{begin()}                             & Initialise hardware; clear all pixels \\
 \sw{on(color)}                           & Set all pixels solid; cancel any flash or timed mode \\
 \sw{onRed()} / \sw{onGreen()} / \sw{onYellow()} & Convenience wrappers \\
-\sw{onForTime(color, ms)}                & Solid for \texttt{ms} milliseconds; then off \\
 \sw{flash(color, on\_ms, off\_ms)}       & Periodic flash indefinitely; cancelled by \sw{on()} or \sw{off()} \\
-\sw{stopFlash()}                         & Stop flashing; turn off \\
 \sw{off()} / \sw{clear()}               & All pixels off; cancel flash/timed modes \\
 \sw{update()}                            & Service timed shutoff and flash state machine --- call from loop() \\
 \bottomrule

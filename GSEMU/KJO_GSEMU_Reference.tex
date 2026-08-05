@@ -322,10 +322,8 @@ Method & Action \\
 \sw{begin()}           & Configure CMD and state pins; command servo to HOLD \\
 \sw{update()}          & Poll CMD (or override), drive servo; detect separation \\
 \sw{isSeparated()}     & Returns true (latched) once state line has gone HIGH \\
-\sw{isConnected()}     & Returns true while state line reads LOW \\
 \sw{localRelease()}    & Set local override; servo opens on next \sw{update()} \\
 \sw{localHold()}       & Clear local override; servo follows CMD on next \sw{update()} \\
-\sw{isLocalOverride()} & Returns true while Button~A override is active \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -365,7 +363,7 @@ Version & Date & Notes \\
                    LAUNCH\_ENABLE\_EIO (AUX\_IO\_5), REMOTE\_START\_EIO (AUX\_IO\_6);
                    Button~A reassigned to hold-to-release QR latch;
                    Button~C now opens Fill valve; \sw{QR\_Slave} API adds \sw{localRelease()},
-                   \sw{localHold()}, \sw{isLocalOverride()}, \sw{isSeparated()}, \sw{isConnected()};
+                   \sw{localHold()}, \sw{isSeparated()};
                    \sw{Check\_AUX\_Input()} drives gated Remote Start output. \\
 0.4 & March 2026 & SD log files moved to SD card root (\texttt{Log\_N.txt}); subdirectory path
                    constant (\texttt{LOG\_FILE\_FOLDER}) removed from \sw{KJO\_Logging.h} and
