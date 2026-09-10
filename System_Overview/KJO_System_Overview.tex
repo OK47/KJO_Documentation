@@ -1,7 +1,7 @@
 \documentclass[11pt,letterpaper]{article}
 \input{../shared/KJO_preamble}
-\newcommand{\docversion}{0.1}
-\newcommand{\docdate}{March 2026}
+\newcommand{\docversion}{0.2}
+\newcommand{\docdate}{September 2026}
 \lhead{\textsc{KJO Liquid Rocket Motor Control System}}
 \rhead{\textsc{System Overview} --- v\docversion}
 \cfoot{\thepage\ of \pageref{LastPage}}
@@ -77,29 +77,67 @@ Figure~\ref{fig:propellant} shows the propellant system schematic.
 
 \subsection{Fill Sequence}
 
+EMU owns the entire fill session --- GSEMU has no fill state machine of
+its own, it only opens/closes the Fill valve servo on command; LCMU only
+answers weight queries. This replaced an earlier design where GSEMU
+tracked progress itself (see the CAN protocol note in
+Section~\ref{sec:architecture}).
+
 \begin{enumerate}[nosep]
   \item Operator commands \cmd{BEGIN\_FILL} from the RCU.
-  \item EMU asserts the CMD bit (AUX\_IO\_1) high.
-  \item GSEMU detects the CMD rising edge and opens the Fill valve servo.
+  \item EMU (fresh start only --- a paused session skips this) sends
+        \sw{CAN\_TARE} to LCMU.
+  \item EMU sends \sw{CAN\_OPEN\_FILL\_VALVE} to GSEMU.
   \item N\textsubscript{2}O flows: GSE source tank~$\to$ Fill valve~$\to$
         QR servo~$\to$ umbilical~$\to$ check valve~$\to$ on-board
         oxidizer tank.
-  \item GSEMU asserts STATUS (AUX\_IO\_2) high when fill is complete.
-  \item EMU de-asserts CMD; GSEMU closes the Fill valve.
+  \item EMU polls LCMU with \sw{CAN\_REPORT\_CURRENT\_WEIGHT} every
+        200~ms, comparing the tare-relative reading against a per-motor
+        target it holds locally (never sent to GSEMU or LCMU).
+  \item Once the target is reached, EMU sends \sw{CAN\_CLOSE\_FILL\_VALVE}
+        to GSEMU. \cmd{STOP\_FILL} (operator pause) does the same at any
+        point; a later \cmd{BEGIN\_FILL} resumes without re-taring.
+  \item The RCU polls fill progress locally from the EMU via
+        \cmd{QUERY\_FILL\_PROGRESS} (LoRa) --- this is answered from EMU's
+        own cached poll state, not a fresh CAN round trip.
 \end{enumerate}
 
 \subsection{Engine Firing Sequence}
 
+Ignition is a 10-step sequence (\sw{Check\_Engine\_Start()}) that
+establishes propellant flow \emph{before} firing the igniter --- reversed
+from an earlier design that fired first. Fuel opens before Ox, since it
+has the longer physical path to the chamber and needs the head start;
+the igniter's solid starter motor only burns for a very short window
+once lit.
+
 \begin{enumerate}[nosep]
-  \item Operator commands \cmd{ENABLE\_LCO\_CONTROL} (enables launch authority).
-  \item Operator commands \cmd{START\_ENGINE}, which calls
-        \sw{Execute\_Command(START\_ENGINE)}.
-  \item EMU simultaneously opens Ox Feed valve and Fuel Feed valve to
-        programmed positions and activates the igniter relay.
+  \item Operator selects a source with \cmd{SET\_IGNITION\_SOURCE}
+        (RCU / LCO / Airstart) and arms it with \cmd{ARM\_LAUNCH}
+        (renamed from \cmd{ENABLE\_LCO\_CONTROL}).
+  \item Operator commands \cmd{START\_ENGINE} (RCU source), or the armed
+        LCO/Airstart trigger fires --- either way, EMU sends
+        \cmd{ENGINE\_START\_ARMED} to the RCU unprompted the instant the
+        sequence begins.
+  \item EMU verifies Ox and Fuel are closed; if GSEMU is CAN-reachable,
+        closes the Fill valve and waits for confirmation (protects the
+        ground tanks from an open Fill valve during ignition).
+  \item EMU releases the umbilical quick-release and waits for confirmed
+        physical separation, then a fixed dwell.
+  \item EMU opens the Fuel valve, waits for confirmed open plus a flow
+        delay, then opens the Ox valve the same way.
+  \item EMU fires the igniter relay --- the last step, once both
+        propellants are already flowing.
   \item Proportional control commands (\cmd{OXIDIZER\_FLOW\_PROP},
-        \cmd{FUEL\_FLOW\_PROP}) may be sent during burn to adjust mixture ratio.
-  \item \cmd{STOP\_ENGINE\_FLOWS} closes both feed valves to terminate thrust.
+        \cmd{FUEL\_FLOW\_PROP}) may be sent during burn to adjust mixture
+        ratio.
+  \item \cmd{STOP\_ENGINE\_FLOWS} closes both feed valves to terminate
+        thrust.
 \end{enumerate}
+
+Any precondition or confirmation failure at steps 3--5 aborts the
+sequence; see the EMU Reference for the full step table and failure
+codes.
 
 \subsection{Dump / Safe Procedure}
 
@@ -184,23 +222,57 @@ Library & Contents & Used by \\
 
 \subsection{Packet Structures}
 
-Three binary packet types are used on the radio link:
+Six binary packet types are used on the radio link (all defined in
+\sw{KJO\_Command\_Defs.h}):
 
+\begin{sloppypar}
 \begin{itemize}[nosep]
-  \item \textbf{Command\_Payload} (4 bytes): \texttt{command} (2B),
-        \texttt{param} (short, 2B).  Used for most commands.
-  \item \textbf{Heartbeat\_Command\_Packet} (6 bytes): \texttt{command} (2B),
-        \texttt{RCU\_voltage} (float, 4B).  Sent by RCU as heartbeat.
-  \item \textbf{Heartbeat\_Response\_Packet} (10 bytes): \texttt{command} (2B),
-        \texttt{EMU\_voltage} (float, 4B),
-        \texttt{fill\_pct}, \texttt{ox\_pct}, \texttt{fuel\_pct},
-        \texttt{dump\_pct} (uint8, 1B each).  Sent by EMU.
-  \item \textbf{Command\_Return\_Packet}: \texttt{command} (2B),
-        \texttt{status} (bool), \texttt{r\_val} (short).
-        Returned for non-heartbeat commands.
+  \item \textbf{Command\_Payload} (4 bytes, RCU$\to$EMU): \texttt{command}
+        (1B), \texttt{param} (short, 2B), \texttt{terminator} (1B).  Used
+        for most commands.
+  \item \textbf{Command\_Return\_Packet} (4 bytes, EMU$\to$RCU):
+        \texttt{command} (1B), \texttt{status} (bool, 1B), \texttt{r\_val}
+        (short, 2B).  Returned for most non-heartbeat commands.
+  \item \textbf{Heartbeat\_Command\_Packet} (1 byte, RCU$\to$EMU):
+        \texttt{command} only --- the RCU already knows its own battery
+        voltage locally.
+  \item \textbf{Heartbeat\_Response\_Packet} (11 bytes, EMU$\to$RCU):
+        \texttt{command} (1B), \texttt{EMU\_voltage} (float, 4B),
+        \texttt{fill\_pct}, \texttt{ox\_pct}, \texttt{fuel\_pct} (int8,
+        1B each), \texttt{qr\_connected}, \texttt{gsemu\_reachable},
+        \texttt{lcmu\_reachable} (bool, 1B each). The last three come
+        from EMU's own CAN presence cache, not a fresh query per
+        heartbeat.
+  \item \textbf{Fill\_Progress\_Response\_Packet} (9 bytes, EMU$\to$RCU,
+        answers \cmd{QUERY\_FILL\_PROGRESS}): \texttt{command} (1B),
+        \texttt{fill\_state} (1B: IDLE/IN\_PROGRESS/PAUSED/COMPLETE/
+        ABORTED), \texttt{current\_weight\_lbm} (float, 4B),
+        \texttt{percent} (int8, 1B), \texttt{seconds\_remaining} (int16,
+        2B; $-1$ until enough flow has been observed to estimate).
+  \item \textbf{RCU\_Status\_Response\_Packet} (9 bytes, EMU$\to$RCU,
+        answers \cmd{RCU\_STATUS}): \texttt{command} (1B),
+        \texttt{emu\_health}, \texttt{gsemu\_health}, \texttt{lcmu\_health}
+        (uint16, 2B each, from live \sw{CAN\_GET\_HEALTH\_STATUS} queries),
+        \texttt{gsemu\_reachable}, \texttt{lcmu\_reachable} (bool, 1B each).
 \end{itemize}
+\end{sloppypar}
+
+\begin{sloppypar}
+A seventh type, \textbf{Extended\_Heartbeat\_Response\_Packet}, exists
+only for RCU\_UNIT\_TEST's bench-test telemetry panel and is never sent
+to or parsed by production RCU.
+\end{sloppypar}
 
 \subsection{Command Table}
+
+\begin{sloppypar}
+Codes 1--35 below are production RCU's full command set. Codes 36--39
+(\cmd{FIRE\_IGNITER}, \cmd{OPEN\_FILL\_VALVE}, \cmd{CLOSE\_FILL\_VALVE},
+\cmd{EXTENDED\_HEARTBEAT}) exist only for RCU\_UNIT\_TEST, a separate
+bench-test harness firmware with an expanded command set for exercising
+individual actuators directly; production RCU never sends them and this
+table omits their detail.
+\end{sloppypar}
 
 \begingroup
 \footnotesize
@@ -211,30 +283,41 @@ Code & Name & Direction & \texttt{param} & Description \\
 \endhead
 \bottomrule
 \endfoot
- 1 & \cmd{BEGIN\_FILL}           & RCU$\to$EMU & ---   & Command GSEMU to open Fill valve \\
- 2 & \cmd{STOP\_FILL}            & RCU$\to$EMU & ---   & Command GSEMU to close Fill valve \\
+ 1 & \cmd{BEGIN\_FILL}           & RCU$\to$EMU & ---   & Start/resume the fill session (EMU-owned; see Fill Sequence) \\
+ 2 & \cmd{STOP\_FILL}            & RCU$\to$EMU & ---   & Pause the active fill session \\
  3 & \cmd{OPEN\_OXIDIZER\_FEED}  & RCU$\to$EMU & ---   & Open Ox Feed valve fully \\
  4 & \cmd{CLOSE\_OXIDIZER\_FEED} & RCU$\to$EMU & ---   & Close Ox Feed valve \\
  5 & \cmd{OPEN\_FUEL\_FEED}      & RCU$\to$EMU & ---   & Open Fuel Feed valve fully \\
  6 & \cmd{CLOSE\_FUEL\_FEED}     & RCU$\to$EMU & ---   & Close Fuel Feed valve \\
  7 & \cmd{OXIDIZER\_FLOW\_PROP}  & RCU$\to$EMU & \%    & Set Ox valve position (0--100\%) \\
  8 & \cmd{FUEL\_FLOW\_PROP}      & RCU$\to$EMU & \%    & Set Fuel valve position (0--100\%) \\
- 9 & \cmd{DUMP}                  & RCU$\to$EMU & ---   & Open Ox valve; vent pressurant through chamber \\
-10 & \cmd{STOP\_DUMP}            & RCU$\to$EMU & ---   & Close Ox valve \\
-11 & \cmd{START\_ENGINE\_FLOWS}  & RCU$\to$EMU & ---   & Open both feed valves simultaneously \\
-12 & \cmd{STOP\_ENGINE\_FLOWS}   & RCU$\to$EMU & ---   & Close both feed valves simultaneously \\
-13 & \cmd{ENABLE\_LCO\_CONTROL}  & RCU$\to$EMU & ---   & Enable launch authority \\
-14 & \cmd{START\_ENGINE}         & RCU$\to$EMU & ---   & Fire igniter and open valves \\
-15 & \cmd{RESET}                 & RCU$\to$EMU & ---   & Reset EMU to safe state \\
-16 & \cmd{READ\_TANK\_PRESSURE}  & RCU$\to$EMU & ---   & Return oxidizer tank pressure \\
-17 & \cmd{READ\_CHAMBER\_PRESSURE} & RCU$\to$EMU & ---  & Return chamber pressure \\
-18 & \cmd{READ\_TANK\_TEMP}      & RCU$\to$EMU & ---   & Return oxidizer tank temperature \\
-19 & \cmd{READ\_CHAMBER\_TEMP}   & RCU$\to$EMU & ---   & Return combustion chamber temperature \\
-20 & \cmd{START\_PRESSURE\_RECORDING} & RCU$\to$EMU & --- & Begin high-rate pressure logging \\
-21 & \cmd{STOP\_PRESSURE\_RECORDING}  & RCU$\to$EMU & --- & End high-rate pressure logging \\
-22 & \cmd{READ\_VALVE\_POSITION} & RCU$\to$EMU & valve\# & Return servo position (0--100\%) \\
-23 & \cmd{HEARTBEAT}             & Bidirectional & ---  & Keepalive / link maintenance \\
-24 & \cmd{RCU\_STATUS}           & RCU$\to$EMU & ---   & Request full status packet \\
+ 9 & \cmd{DUMP}                  & RCU$\to$EMU & ---   & Open Ox valve; vent pressurant through chamber (no dedicated Dump valve) \\
+10 & \cmd{START\_ENGINE\_FLOWS}  & RCU$\to$EMU & ---   & Open both feed valves simultaneously (bench/test use, not the ignition sequence) \\
+11 & \cmd{STOP\_ENGINE\_FLOWS}   & RCU$\to$EMU & ---   & Close both feed valves simultaneously \\
+12 & \cmd{ARM\_LAUNCH}           & RCU$\to$EMU & 0/1   & Arm/disarm the currently-selected ignition source (renamed from \cmd{ENABLE\_LCO\_CONTROL}); rejected while a fill is armed \\
+13 & \cmd{START\_ENGINE}         & RCU$\to$EMU & ---   & Begin the 10-step ignition sequence (RCU source) \\
+14 & \cmd{RESET}                 & RCU$\to$EMU, or EMU$\to$RCU unprompted & --- & Abort: sequenced vent procedure ending in a terminal latched state (power-cycle only recovery); unprompted with \texttt{r\_val}~=~1 means EMU auto-aborted on sustained Ox tank overpressure \\
+15 & \cmd{READ\_TANK\_PRESSURE}  & RCU$\to$EMU & ---   & Return oxidizer tank pressure \\
+16 & \cmd{READ\_CHAMBER\_PRESSURE} & RCU$\to$EMU & ---  & Return chamber pressure \\
+17 & \cmd{READ\_TEMP2}           & RCU$\to$EMU & ---   & Return EMU's Temp2 thermocouple reading (renamed from \cmd{READ\_TANK\_TEMP}; physical mounting location not fixed) \\
+18 & \cmd{READ\_TEMP1}           & RCU$\to$EMU & ---   & Return EMU's Temp1 thermocouple reading (renamed from \cmd{READ\_CHAMBER\_TEMP}) \\
+19 & \cmd{START\_PRESSURE\_RECORDING} & RCU$\to$EMU & --- & Begin high-rate pressure logging \\
+20 & \cmd{STOP\_PRESSURE\_RECORDING}  & RCU$\to$EMU & --- & End high-rate pressure logging \\
+21 & \cmd{READ\_VALVE\_POSITION} & RCU$\to$EMU & valve\# & Return servo position (0--100\%) \\
+22 & \cmd{HEARTBEAT}             & Bidirectional & ---  & Keepalive / link maintenance, 5~s interval \\
+23 & \cmd{RCU\_STATUS}           & RCU$\to$EMU & ---   & Request EMU/GSEMU/LCMU health summary (live CAN queries) \\
+24 & \cmd{STOP\_DUMP}            & RCU$\to$EMU & ---   & Close Ox valve (second Dump-button press) \\
+25 & \cmd{QR\_RELEASE}           & RCU$\to$EMU & ---   & Command GSEMU to release the umbilical quick-release \\
+26 & \cmd{QUERY\_FILL\_PROGRESS} & RCU$\to$EMU & ---   & Poll fill session state/weight/percent/time-remaining (renamed from \cmd{QUERY\_FILL\_STATUS}); answered from EMU's own cache \\
+27 & \cmd{TARE\_LCMU}            & RCU$\to$EMU (CAN relay) & --- & Relay: command LCMU to tare \\
+28 & \cmd{GET\_LCMU\_BATTERY}    & RCU$\to$EMU (CAN relay) & --- & Relay: request LCMU battery voltage \\
+29 & \cmd{REPORT\_LCMU\_WEIGHT}  & RCU$\to$EMU (CAN relay) & --- & Relay: request LCMU's current weight/thrust reading \\
+30 & \cmd{BEGIN\_WEIGHT\_RECORDING} & RCU$\to$EMU (CAN relay) & --- & Relay: start LCMU weighing-mode SD logging \\
+31 & \cmd{STOP\_WEIGHT\_RECORDING}  & RCU$\to$EMU (CAN relay) & --- & Relay: stop LCMU weighing-mode SD logging \\
+32 & \cmd{BEGIN\_THRUST\_RECORDING} & RCU$\to$EMU (CAN relay) & --- & Relay: arm LCMU thrust-mode capture \\
+33 & \cmd{STOP\_THRUST\_RECORDING}  & RCU$\to$EMU (CAN relay) & --- & Relay: manual override to stop LCMU thrust-mode capture \\
+34 & \cmd{SET\_IGNITION\_SOURCE} & RCU$\to$EMU & 0/1/2 & Select ignition source: 0=RCU, 1=LCO, 2=Airstart; rejected while armed \\
+35 & \cmd{ENGINE\_START\_ARMED}  & EMU$\to$RCU, unprompted & --- & Sent the instant any source arms the 10-step sequence; \texttt{r\_val} = ignition source (same encoding as \cmd{SET\_IGNITION\_SOURCE}) \\
 \end{longtable}
 \endgroup
 
@@ -261,13 +344,14 @@ LCMU Reference  & \texttt{LCMU/KJO\_LCMU\_Reference.pdf} & Hardware, software, C
 %═══════════════════════════════════════════════════════════════════════════════
 
 \begin{center}
-\begin{tabular}{@{}lll@{}}
+\begin{tabularx}{\textwidth}{@{}llY@{}}
 \toprule
 Version & Date & Notes \\
 \midrule
 0.1 & March 2026 & Initial release. \\
+0.2 & September 2026 & Added LCMU as a fourth unit throughout (Introduction, Electronic Control Architecture and its figure, Shared Libraries, Document References). Replaced the retired EMU--GSEMU wired GPIO handshake description with the current EMU--GSEMU--LCMU CAN bus. Rewrote Fill Sequence for the current EMU-owned (not GSEMU-owned) fill session. Rewrote Engine Firing Sequence for the current 10-step, propellant-flow-before-ignition, Fuel-before-Ox sequence (was: simultaneous valves, igniter first). Fully refreshed Packet Structures (added Fill\_Progress\_Response\_Packet and RCU\_Status\_Response\_Packet; corrected Heartbeat\_Response\_Packet's fields) and the Command Table (24 stale entries replaced with the current 35-command production set; several codes had been reassigned since the last edit, not just added to). \\
 \bottomrule
-\end{tabular}
+\end{tabularx}
 \end{center}
 
 \end{document}

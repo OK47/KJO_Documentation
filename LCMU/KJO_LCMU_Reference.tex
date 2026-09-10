@@ -1,6 +1,6 @@
 \documentclass[11pt,letterpaper]{article}
 \input{../shared/KJO_preamble}
-\newcommand{\docversion}{0.1}
+\newcommand{\docversion}{0.2}
 \newcommand{\docdate}{September 2026}
 \lhead{\textsc{KJO Load Cell Management Unit}}
 \rhead{\textsc{LCMU Reference} --- v\docversion}
@@ -205,15 +205,22 @@ SD/RTC init failure (shared convention across EMU/GSEMU/LCMU) and bits
 \subsection{Fill Sequence (LCMU's Role)}
 
 LCMU does not initiate or track the fill sequence itself --- it only
-answers GSEMU's requests:
+answers EMU's requests. EMU owns the whole session; GSEMU has no fill
+state machine of its own, it only opens/closes the Fill valve servo on
+command:
 \begin{sloppypar}
 \begin{enumerate}[nosep]
-  \item EMU sends \cmd{SET\_FILL\_TARGET} then \cmd{BEGIN\_FILL} to GSEMU.
-  \item GSEMU sends \cmd{CAN\_TARE} to LCMU, opens the Fill valve, then
-        repeatedly sends \cmd{CAN\_REPORT\_CURRENT\_WEIGHT} to LCMU,
-        comparing against its target.
-  \item When the target is reached, GSEMU closes the Fill valve itself ---
-        no round trip to EMU or LCMU is needed to authorize the close.
+  \item Operator commands \cmd{BEGIN\_FILL} (RCU $\to$ EMU).
+  \item EMU (fresh start only --- a resumed/paused session skips this,
+        since re-taring mid-fill would zero the load cells against mass
+        already flowed) sends \cmd{CAN\_TARE} to LCMU.
+  \item EMU sends \cmd{CAN\_OPEN\_FILL\_VALVE} to GSEMU.
+  \item EMU polls LCMU with \cmd{CAN\_REPORT\_CURRENT\_WEIGHT} every
+        200~ms, comparing the tare-relative reading against a per-motor
+        target EMU holds locally --- never sent to GSEMU or LCMU.
+  \item Once the target is reached, EMU sends \cmd{CAN\_CLOSE\_FILL\_VALVE}
+        to GSEMU itself; no round trip through LCMU is needed to
+        authorize the close.
 \end{enumerate}
 \end{sloppypar}
 
@@ -440,6 +447,7 @@ pattern EMU's PCF8523 uses.
 Version & Date & Notes \\
 \midrule
 0.1 & September 2026 & Initial release. \\
+0.2 & September 2026 & Corrected the Fill Sequence subsection: EMU owns the fill session directly (\sw{CAN\_TARE} and \sw{CAN\_REPORT\_CURRENT\_WEIGHT} sent by EMU itself, target held locally on EMU), not GSEMU as the initial draft stated -- that description matched an earlier, superseded design. \\
 \bottomrule
 \end{tabularx}
 \end{center}
