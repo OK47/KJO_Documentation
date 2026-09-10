@@ -28,7 +28,7 @@
 \subsection{Component Summary}
 
 \begin{center}
-\begin{tabular}{@{}llll@{}}
+\begin{tabularx}{\textwidth}{@{}lp{6.2cm}lY@{}}
 \toprule
 Component & Part & Interface & Notes \\
 \midrule
@@ -40,13 +40,13 @@ Real-Time Clock & PCF8523                                       & I\textsuperscr
 SD Card         & Standard SPI SD socket                        & SPI     & \\
 Battery         & 3.7~V LiPo                                    & ---     & \\
 \bottomrule
-\end{tabular}
+\end{tabularx}
 \end{center}
 
 \subsection{MCP23X17 GPIO Expander Pin Map}
 
 \begin{center}
-\begin{tabular}{@{}lll@{}}
+\begin{tabularx}{\textwidth}{@{}llY@{}}
 \toprule
 Pin Name & Direction & Function \\
 \midrule
@@ -60,7 +60,7 @@ Button C (fill open)   & IN  & Locally command Fill valve open \\
 \sig{AUX\_IO\_5} (\sig{LAUNCH\_ENABLE\_EIO})  & IN  & Remote start enable from EMU (INPUT\_PULLUP; LOW = enabled) \\
 \sig{AUX\_IO\_6} (\sig{REMOTE\_START\_EIO})   & OUT & Remote start command to EMU (OUTPUT; LOW = start commanded, HIGH = hold) \\
 \bottomrule
-\end{tabular}
+\end{tabularx}
 \end{center}
 
 \subsection{Hardware Block Diagram}
@@ -104,7 +104,7 @@ Button C (fill open)   & IN  & Locally command Fill valve open \\
 \subsection{Module Summary}
 
 \begin{center}
-\begin{tabular}{@{}lll@{}}
+\begin{tabularx}{\textwidth}{@{}llY@{}}
 \toprule
 Module & Location & Responsibility \\
 \midrule
@@ -118,7 +118,7 @@ Module & Location & Responsibility \\
 \sw{KJO\_Logging}        & local  & SD log file constants \\
 \sw{KJO\_System\_Config} & shared & Version, platform constants \\
 \bottomrule
-\end{tabular}
+\end{tabularx}
 \end{center}
 
 \subsection{Class Hierarchy}
@@ -185,7 +185,7 @@ Three panel buttons on the MCP23X17 provide local control during ground
 operations:
 
 \begin{center}
-\begin{tabular}{@{}ll@{}}
+\begin{tabularx}{\textwidth}{@{}lY@{}}
 \toprule
 Button & Action \\
 \midrule
@@ -195,7 +195,7 @@ A (QR Release) & \textbf{Hold-to-release}: calls \sw{localRelease()} on press; s
 B (Fill Close) & Drive Fill valve servo to fully closed position (falling-edge triggered). \\
 C (Fill Open)  & Drive Fill valve servo to fully open position (falling-edge triggered). \\
 \bottomrule
-\end{tabular}
+\end{tabularx}
 \end{center}
 
 \begin{warningbox}
@@ -347,7 +347,7 @@ position changes, button presses, and system events.
 \section{Version History}
 %═══════════════════════════════════════════════════════════════════════════════
 \begin{center}
-\begin{tabular}{@{}lll@{}}
+\begin{tabularx}{\textwidth}{@{}llY@{}}
 \toprule
 Version & Date & Notes \\
 \midrule
@@ -363,7 +363,7 @@ Version & Date & Notes \\
                    constant (\texttt{LOG\_FILE\_FOLDER}) removed from \sw{KJO\_Logging.h} and
                    \sw{KJO\_GSE\_Display}. \\
 \bottomrule
-\end{tabular}
+\end{tabularx}
 \end{center}
 
 \end{document}

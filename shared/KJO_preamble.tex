@@ -30,6 +30,13 @@
 \usepackage{longtable}
 \usepackage{array}
 \usepackage{multirow}
+\usepackage{tabularx}
+% Ragged-right auto-width column for free-text table cells (Notes/Function/
+% Description/etc.) -- absorbs whatever width remains of \textwidth after the
+% table's other columns, and wraps instead of overflowing the page margin.
+% Use in place of a plain `l` or a hand-guessed `p{Ncm}` for any column that
+% holds full sentences.
+\newcolumntype{Y}{>{\raggedright\arraybackslash}X}
 
 % --- Code listings ------------------------------------------------------------
 \usepackage{listings}

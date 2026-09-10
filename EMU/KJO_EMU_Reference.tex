@@ -29,7 +29,7 @@
 \subsection{Component Summary}
 
 \begin{center}
-\begin{tabular}{@{}llll@{}}
+\begin{tabularx}{\textwidth}{@{}lp{6.2cm}lY@{}}
 \toprule
 Component & Part & Interface & Notes \\
 \midrule
@@ -47,13 +47,13 @@ Igniter Relay     & SPDT relay via MCP23X17                      & GPIO    & \\
 Buzzer            & Passive piezo via MCP23X17 relay             & GPIO    & \\
 Battery           & 3.7~V LiPo; voltage divider on ADS1015       & ADC     & \\
 \bottomrule
-\end{tabular}
+\end{tabularx}
 \end{center}
 
 \subsection{MCP23X17 GPIO Expander Pin Map}
 
 \begin{center}
-\begin{tabular}{@{}lll@{}}
+\begin{tabularx}{\textwidth}{@{}llY@{}}
 \toprule
 Pin Name & Direction & Function \\
 \midrule
@@ -69,7 +69,7 @@ Pin Name & Direction & Function \\
 \sig{AUX\_IO\_5} (\sig{LAUNCH\_ENABLE\_EIO})      & OUT & Remote start enable to GSEMU (HIGH = disabled, LOW = enabled) \\
 \sig{AUX\_IO\_6} (\sig{REMOTE\_START\_EIO})       & IN  & Remote start command from GSEMU (INPUT\_PULLUP; LOW = start) \\
 \bottomrule
-\end{tabular}
+\end{tabularx}
 \end{center}
 
 \subsection{Hardware Block Diagram}
@@ -455,7 +455,7 @@ red~$\to$ yellow~$\to$ green~$\to$ off as a pixel self-test.
 States are evaluated in descending priority:
 
 \begin{center}
-\begin{tabular}{@{}lllp{4.5cm}@{}}
+\begin{tabularx}{\textwidth}{@{}lYll@{}}
 \toprule
 Priority & Condition & Pattern & Colour \\
 \midrule
@@ -465,7 +465,7 @@ Priority & Condition & Pattern & Colour \\
 4 & \sw{link\_connected} = true      & Flash 300/1200~ms      & Green \\
 5 & (unlinked)                        & Flash 300/1200~ms      & Yellow \\
 \bottomrule
-\end{tabular}
+\end{tabularx}
 \end{center}
 
 \texttt{link\_connected} is set true on every received \cmd{HEARTBEAT} and
@@ -504,7 +504,7 @@ so the next \sw{Check\_Indicator\_And\_Buzzer()} call does not re-arm it.
 \subsection{NeoPixel\_Indicator API}
 
 \begin{center}
-\begin{tabular}{@{}ll@{}}
+\begin{tabularx}{\textwidth}{@{}lY@{}}
 \toprule
 Method & Action \\
 \midrule
@@ -515,7 +515,7 @@ Method & Action \\
 \sw{off()} / \sw{clear()}               & All pixels off; cancel flash/timed modes \\
 \sw{update()}                            & Service timed shutoff and flash state machine --- call from loop() \\
 \bottomrule
-\end{tabular}
+\end{tabularx}
 \end{center}
 
 %═══════════════════════════════════════════════════════════════════════════════
@@ -523,7 +523,7 @@ Method & Action \\
 %═══════════════════════════════════════════════════════════════════════════════
 
 \begin{center}
-\begin{tabular}{@{}llll@{}}
+\begin{tabularx}{\textwidth}{@{}p{3.4cm}lp{2.4cm}Y@{}}
 \toprule
 Sensor & Class & ADC / Bus & Measurement \\
 \midrule
@@ -536,7 +536,7 @@ Thermocouple 1             & \sw{MAX31856}               & SPI         & TC1 (lo
 Thermocouple 2             & \sw{MAX31856}               & SPI         & TC2 (location TBD) \\
 \bottomrule
 \multicolumn{4}{@{}l}{\small $^{\dagger}$Onboard ADC channel assignments are placeholders pending hardware schematic confirmation.} \\
-\end{tabular}
+\end{tabularx}
 \end{center}
 
 \subsection{Pressure Transducer Signal Chain}
@@ -603,7 +603,7 @@ movements, sensor readings, and fault events.
 \section{Version History}
 %═══════════════════════════════════════════════════════════════════════════════
 \begin{center}
-\begin{tabular}{@{}lll@{}}
+\begin{tabularx}{\textwidth}{@{}llY@{}}
 \toprule
 Version & Date & Notes \\
 \midrule
@@ -634,7 +634,7 @@ Version & Date & Notes \\
                    hold-to-open the Ox valve; \texttt{dump\_pct} removed from
                    \texttt{Heartbeat\_Response\_Packet}. \\
 \bottomrule
-\end{tabular}
+\end{tabularx}
 \end{center}
 
 \end{document}
