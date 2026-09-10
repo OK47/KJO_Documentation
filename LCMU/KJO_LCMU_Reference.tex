@@ -1,0 +1,447 @@
+\documentclass[11pt,letterpaper]{article}
+\input{../shared/KJO_preamble}
+\newcommand{\docversion}{0.1}
+\newcommand{\docdate}{September 2026}
+\lhead{\textsc{KJO Load Cell Management Unit}}
+\rhead{\textsc{LCMU Reference} --- v\docversion}
+\cfoot{\thepage\ of \pageref{LastPage}}
+\hypersetup{pdftitle={KJO LCMU Reference}, pdfauthor={Ken Overton}}
+
+\begin{document}
+\input{../shared/KJO_tikz_styles}
+
+\KJOtitlepage%
+  {Load Cell Management Unit (LCMU)}%
+  {Hardware and Software Reference}%
+  {\docversion}{\docdate}%
+  {This document describes the hardware, software architecture, CAN bus
+   protocol, and load-cell/thrust measurement subsystems of the Load Cell
+   Management Unit. The LCMU measures Ox load during oxidizer fill (in
+   support of GSEMU's fill-to-target sequence) and measures thrust during
+   test-stand burns, logging both to microSD.}
+
+\tableofcontents\newpage
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{Hardware Overview}
+%═══════════════════════════════════════════════════════════════════════════════
+
+\subsection{Component Summary}
+
+\begin{center}
+\begin{tabularx}{\textwidth}{@{}lp{6.2cm}lY@{}}
+\toprule
+Component & Part & Interface & Notes \\
+\midrule
+Microcontroller  & Adafruit Feather RP2040 Adalogger (dual-core Cortex M0+, 133~MHz, 8~MB QSPI flash, 264~KB RAM) & --- & Onboard microSD, STEMMA QT \\
+CAN Controller   & Adafruit CAN Bus FeatherWing (MCP2515, TJA1051/3 transceiver) & SPI0 & Link to EMU/GSEMU \\
+OLED Display     & Adafruit 128$\times$64 FeatherWing (SH1107), 1.12\textquotedbl, 3 buttons & I\textsuperscript{2}C & Landscape, rotated 180\textdegree \\
+Real-Time Clock  & Adafruit DS3231 Precision RTC, STEMMA QT & I\textsuperscript{2}C & Coin-cell (CR1220) backup \\
+I\textsuperscript{2}C Multiplexer & Adafruit PCA9548, 8-channel STEMMA QT & I\textsuperscript{2}C & Load-cell ADCs on ports 3, 4, 7 \\
+Load Cell ADC (\texttt{$\times$3}) & Adafruit NAU7802, 24-bit, STEMMA QT & I\textsuperscript{2}C (via mux) & One per load cell; fixed address, hence the mux \\
+Load Cells (\texttt{$\times$3}) & 0--200~kgf each (0--600~kgf combined), tension/compression, 0.1\% precision & --- & 3~m cable \\
+SD Card          & Onboard microSD (dedicated SPI1) & SPI1 & \\
+Battery          & 2S LiPo $\to$ external 5~V regulator & ADC (A0) & Resistor-divider sense \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\subsection{I\texorpdfstring{\textsuperscript{2}}{2}C Topology and Pin Map}
+
+The DS3231, PCA9548 mux, and all three NAU7802 boards share one STEMMA QT
+daisy chain:
+\begin{center}
+Feather $\longleftrightarrow$ DS3231 (0x68) $\longleftrightarrow$
+PCA9548 mux (0x70) $\longleftrightarrow$ ports 3/4/7 $\longleftrightarrow$
+3$\times$NAU7802 (0x2A each)
+\end{center}
+The mux is required because all three NAU7802 boards share the same fixed
+I\textsuperscript{2}C address (\texttt{0x2A}) --- only one can be selected
+onto the shared bus at a time. Channel select is a direct two-byte
+I\textsuperscript{2}C write (\texttt{Wire.beginTransmission(0x70)};
+\texttt{Wire.write(1 << channel)}; \texttt{Wire.endTransmission()}), no
+dedicated mux library needed.
+
+\begin{center}
+\begin{tabularx}{\textwidth}{@{}llY@{}}
+\toprule
+Pin / Signal & Value & Notes \\
+\midrule
+\sig{CAN\_CS\_PIN}    & GPIO1 (RX) & \textbf{RX/TX are reversed on this board} versus the Feather M0 convention EMU/GSEMU use (confirmed against Adafruit's pinout page and the earlephilhower core's \texttt{pins\_arduino.h}) \\
+\sig{CAN\_INT\_PIN}   & GPIO13 & Not read by firmware (this design polls \sw{parsePacket()} from \sw{loop()}); wired for consistency with EMU/GSEMU and left available for future interrupt-driven use \\
+\sig{BUTTON\_A\_PIN}  & GPIO9 & Arms thrust recording (bench testing) \\
+\sig{BUTTON\_B\_PIN}  & GPIO6 & Toggle weight recording \\
+\sig{BUTTON\_C\_PIN}  & GPIO5 & Tare \\
+\sig{BATTERY\_ADC\_PIN} & A0 (GPIO26) & Resistor-divider battery voltage sense, 12-bit ADC \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\subsection{Hardware Block Diagram}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[node distance=0.9cm and 1.8cm]
+  \node[mcublock, minimum width=3.2cm, minimum height=1.1cm] (mcu)
+    {Feather RP2040\\Adalogger};
+  % I2C chain, left column
+  \node[hwblock, left=2.8cm of mcu, yshift= 1.6cm, minimum width=3.0cm] (rtc)  {DS3231 RTC};
+  \node[hwblock, below=0.5cm of rtc, minimum width=3.0cm] (mux)  {PCA9548\\I\textsuperscript{2}C Mux};
+  \node[hwblock, below=0.4cm of mux, minimum width=2.2cm] (nau1) {NAU7802 (1)};
+  \node[hwblock, below=0.35cm of nau1, minimum width=2.2cm] (nau2) {NAU7802 (2)};
+  \node[hwblock, below=0.35cm of nau2, minimum width=2.2cm] (nau3) {NAU7802 (3)};
+  % SPI, right column
+  \node[hwblock, right=2.8cm of mcu, yshift=0.8cm, minimum width=2.8cm] (can) {MCP2515\\CAN FeatherWing};
+  \node[hwblock, below=0.6cm of can, minimum width=2.8cm] (sd)  {microSD (onboard)};
+  % Below MCU: local UI, then power (offset clear of the OLED node)
+  \node[hwblock, below=2.0cm of mcu, minimum width=3.2cm] (oled) {SH1107 OLED\\+ 3 Buttons};
+  \node[powerblock, below=1.3cm of oled, xshift=-2.6cm, minimum width=3.0cm] (bat) {2S LiPo + 5V Reg.};
+  % I2C bus
+  \draw[bidbusline] (mcu.north west) -- ++(-0.9,0) |- (rtc.east) node[near start,above,font=\tiny]{I\textsuperscript{2}C};
+  \draw[bidbusline] (mcu.west |- mux) -- (mux.east) node[midway,above,font=\tiny]{I\textsuperscript{2}C};
+  \draw[busline] (mux.south) -- (nau1.north);
+  \draw[busline] (nau1.south) -- (nau2.north);
+  \draw[busline] (nau2.south) -- (nau3.north);
+  \draw[bidbusline] (mcu.south) -- (oled.north) node[midway,right,font=\tiny]{I\textsuperscript{2}C};
+  % SPI0 (CAN) / SPI1 (SD)
+  \draw[bidbusline] (mcu.east |- can) -- (can.west) node[midway,above,font=\tiny]{SPI0};
+  \draw[bidbusline] (mcu.east |- sd)  -- (sd.west)  node[midway,above,font=\tiny]{SPI1};
+  % Power -- routed around the OLED node, not through it
+  \draw[busline,draw=KJOorange] (bat.north) -- ++(0,0.9) -| (mcu.south)
+    node[near end,right,font=\tiny]{5V};
+\end{tikzpicture}
+\caption{LCMU hardware block diagram.}
+\end{figure}
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{Software Architecture}
+%═══════════════════════════════════════════════════════════════════════════════
+
+\subsection{Module Summary}
+
+\begin{center}
+\begin{tabularx}{\textwidth}{@{}llY@{}}
+\toprule
+Module & Location & Responsibility \\
+\midrule
+\sw{main.cpp}            & local  & Setup, loop, CAN dispatch, recording modes, buttons, display refresh \\
+\sw{KJO\_Load\_Cells}    & local  & PCA9548 mux control, 3$\times$NAU7802 background scan, tare, raw$\to$lbf conversion \\
+\sw{KJO\_LCMU\_Display}  & local  & SH1107 OLED idle/run screen \\
+\sw{KJO\_LCMU\_Files}    & local  & SD file-sequencing (\sw{Find\_Available\_File()}) \\
+\sw{KJO\_Thrust\_Buffer} & local  & Pre/post-trigger RAM ring buffer for high-rate thrust capture \\
+\sw{KJO\_CAN\_Command\_Defs} & shared & CAN command codes, packet structs, node IDs \\
+\sw{KJO\_Status} / \sw{KJO\_Status\_Display} & shared & Boot-time scrolling status log (\sw{Report\_Status()}) \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\subsection{Main Loop Control Flow}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[node distance=0.5cm]
+  \node[flowterminal] (start)  {loop()};
+  \node[flowproc, below=of start]  (scan)  {Cells.scan()};
+  \node[flowproc, below=of scan]   (can)   {Check\_CAN()};
+  \node[flowproc, below=of can]    (wt)    {Check\_Weight\_Recording()};
+  \node[flowproc, below=of wt]     (th)    {Check\_Thrust\_Recording()};
+  \node[flowproc, below=of th]     (health) {Check\_Cell\_Health()};
+  \node[flowproc, below=of health] (btn)   {Check\_Buttons()};
+  \node[flowproc, below=of btn]    (disp)  {Check\_Display()};
+  \draw[flowarrow] (start)--(scan);
+  \draw[flowarrow] (scan)--(can);
+  \draw[flowarrow] (can)--(wt);
+  \draw[flowarrow] (wt)--(th);
+  \draw[flowarrow] (th)--(health);
+  \draw[flowarrow] (health)--(btn);
+  \draw[flowarrow] (btn)--(disp);
+  \draw[flowarrow] (disp.south) -- ++(0,-0.4) -- ++(4.0,0)
+    -- ++(0,6.3) -- (start.east);
+\end{tikzpicture}
+\caption{LCMU main loop control flow. \sw{Cells.scan()} advances the
+background round-robin load-cell read by one step every iteration --
+everything else reads back whatever it most recently finished.}
+\end{figure}
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{CAN Bus Protocol}
+%═══════════════════════════════════════════════════════════════════════════════
+
+Pure addressed command/response: every message is a request or a direct
+reply to one, no unsolicited broadcasts. Node IDs: EMU~=~1, GSEMU~=~2,
+LCMU~=~3. CAN ID packing (11-bit standard frame):
+\texttt{CAN\_ID = (destination << 4) | source}. Baud rate: 1~Mbps.
+Frame payload: \texttt{[command(1 byte)][params(up to 7 bytes)]}, defined
+in the shared \sw{KJO\_CAN\_Command\_Defs.h} header (separate from the
+LoRa-only \sw{KJO\_Command\_Defs.h}, since the two transports serve
+different audiences).
+
+\subsection{Command Table}
+
+\begin{center}
+\begin{tabularx}{\textwidth}{@{}llp{2.6cm}Y@{}}
+\toprule
+Command & Sent by & Response & Notes \\
+\midrule
+\cmd{CAN\_TARE}                   & EMU or GSEMU & ack & Tares all 3 channels (\sw{Cells.tare()}) \\
+\cmd{CAN\_GET\_BATTERY\_VOLTAGE}  & EMU          & float volts & \\
+\cmd{CAN\_REPORT\_CURRENT\_WEIGHT}& EMU or GSEMU & float lbf & Combined 3-channel total; GSEMU polls this during an active fill \\
+\cmd{CAN\_BEGIN\_WEIGHT\_RECORDING} & EMU        & ack/fail & Fails if Thrust mode is active \\
+\cmd{CAN\_STOP\_WEIGHT\_RECORDING}  & EMU        & ack      & \\
+\cmd{CAN\_BEGIN\_THRUST\_RECORDING} & EMU        & ack/fail & Arms threshold trigger; fails if Weighing mode is active \\
+\cmd{CAN\_STOP\_THRUST\_RECORDING}  & EMU        & ack      & Manual override --- forces immediate write-and-close \\
+\cmd{CAN\_GET\_HEALTH\_STATUS}      & Any node   & uint16 bitfield & SD/RTC/per-cell fault bits (see below) \\
+\cmd{CAN\_PING}                     & Any node   & ack      & Boot-time presence check only \\
+\cmd{CAN\_GET\_CELL\_RAW}           & EMU        & float (tare-adjusted raw) & \texttt{param} = channel index (0/1/2); diagnostic readout for RCU\_UNIT\_TEST \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\sw{CAN\_GET\_HEALTH\_STATUS}'s response bitfield reuses bits 0--1 for
+SD/RTC init failure (shared convention across EMU/GSEMU/LCMU) and bits
+8--10 for this board's own 3 load-cell channels
+(\texttt{HEALTH\_LCMU\_CELL\_1\_FAIL} through \texttt{\_3\_FAIL}).
+
+\subsection{Fill Sequence (LCMU's Role)}
+
+LCMU does not initiate or track the fill sequence itself --- it only
+answers GSEMU's requests:
+\begin{sloppypar}
+\begin{enumerate}[nosep]
+  \item EMU sends \cmd{SET\_FILL\_TARGET} then \cmd{BEGIN\_FILL} to GSEMU.
+  \item GSEMU sends \cmd{CAN\_TARE} to LCMU, opens the Fill valve, then
+        repeatedly sends \cmd{CAN\_REPORT\_CURRENT\_WEIGHT} to LCMU,
+        comparing against its target.
+  \item When the target is reached, GSEMU closes the Fill valve itself ---
+        no round trip to EMU or LCMU is needed to authorize the close.
+\end{enumerate}
+\end{sloppypar}
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{Load Cell Subsystem}
+%═══════════════════════════════════════════════════════════════════════════════
+
+\subsection{NAU7802 Configuration}
+
+\begin{center}
+\begin{tabularx}{\textwidth}{@{}lllY@{}}
+\toprule
+Constant & Value & Unit & Meaning \\
+\midrule
+\sw{LOAD\_CELL\_GAIN}            & 128$\times$ & --- & NAU7802 PGA gain \\
+\sw{LOAD\_CELL\_EXCITATION\_VOLTS} & 3.0 & V & Bridge excitation, also the ADC reference (ratiometric) \\
+\sw{LOAD\_CELL\_SAMPLE\_RATE\_SPS} & 320 & SPS & Fastest available NAU7802 conversion rate \\
+\sw{SAMPLE\_AVERAGE\_COUNT}      & 9   & readings & Averaged per reported sample; noise drops as $1/\sqrt{N}$ \\
+\sw{TARE\_SAMPLE\_COUNT}         & 10  & readings & Averaged per channel at tare time \\
+\sw{LOAD\_CELL\_COUNTS\_PER\_LBF} & 2435.2 & counts/lbf & Estimated (see derivation below); pending known-weight calibration \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+The excitation voltage is set below the NAU7802's rated 2.4--4.0~V range:
+the STEMMA QT bus feeding all three boards runs off the Feather's own
+3.3~V rail (not the 5~V the Feather itself is powered from), leaving
+little headroom for the chip's internal LDO to regulate cleanly above
+3.0~V. Reaching the full rated range for better SNR would require
+rewiring the NAU7802 boards' power pin to a 5~V source instead of the
+3.3~V STEMMA QT bus --- a hardware change, deferred.
+
+\sw{LOAD\_CELL\_COUNTS\_PER\_LBF} is derived from the load cell's rated
+output (1~mV/V at full-scale 200~kgf) and the NAU7802's ratiometric ADC
+transfer function:
+\[
+\text{full-scale ADC code} = \frac{V_{\text{diff}} \times \text{Gain}}{V_{\text{ref}}} \times 2^{23}
+= \frac{0.003 \times 128}{3.0} \times 8388608 \approx 1{,}073{,}742 \text{ counts}
+\]
+\[
+\text{full-scale lbf} = 200~\text{kgf} \times 2.20462 \approx 440.92~\text{lbf}
+\qquad\Rightarrow\qquad
+\text{counts/lbf} = \frac{1{,}073{,}742}{440.92} \approx 2435.2
+\]
+This is an estimate pending an actual known-weight calibration pass.
+
+\subsection{Background Scan and Tare}
+
+\sw{Load\_Cells::scan()}, called unconditionally every \sw{loop()}
+iteration, advances a round-robin background read: one raw attempt per
+call for whichever channel is currently up, finalizing that channel's
+cached average once \sw{SAMPLE\_AVERAGE\_COUNT} attempts have accumulated
+before moving to the next channel. Every other reader
+(\sw{readChannels()}, \sw{readWeight()}, \sw{rawCached()}) is instant ---
+it reads back the most recently completed batch rather than triggering a
+fresh ADC read. A channel reports healthy if at least one reading in its
+most recent batch succeeded.
+
+\sw{tareChannel()} averages \sw{TARE\_SAMPLE\_COUNT} raw readings
+back-to-back and stores the result as that channel's offset in raw ADC
+counts (not lbf) --- this keeps the tare valid independent of
+\sw{LOAD\_CELL\_COUNTS\_PER\_LBF}, so a later calibration revision doesn't
+invalidate an existing tare. \sw{tare()} tares all 3 channels in turn and
+is run automatically as the last step of \sw{setup()}, so the unit starts
+up already zeroed, as well as on \cmd{CAN\_TARE} or Button~C.
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{Operating Modes}
+%═══════════════════════════════════════════════════════════════════════════════
+
+\sw{current\_mode} (\texttt{MODE\_IDLE} / \texttt{MODE\_WEIGHING} /
+\texttt{MODE\_THRUST}) gates both recording behavior and which OLED
+buttons are watched. Weighing and Thrust are mutually exclusive --- a
+\cmd{CAN\_BEGIN\_THRUST\_RECORDING} while weighing (or vice versa) is
+rejected with ack~=~fail.
+
+\subsection{Idle Mode}
+
+Continuously samples all 3 load cells via the background scan, answers
+on-demand CAN queries, and watches all three OLED buttons.
+
+\subsection{Weighing Mode}
+
+Opens the next sequenced \texttt{Weight\_N.txt} and appends one
+timestamped sample (raw counts and lbf, all 3 channels plus the combined
+total) every \sw{WEIGHT\_SAMPLE\_INTERVAL\_MS} (1~s), until
+\cmd{CAN\_STOP\_WEIGHT\_RECORDING} or Button~B closes the file. Only
+Button~B is watched while weighing; A and C are ignored.
+
+\subsection{Thrust Mode}
+
+\begin{center}
+\begin{tabularx}{\textwidth}{@{}lY@{}}
+\toprule
+Constant & Meaning \\
+\midrule
+\sw{THRUST\_ARM\_THRESHOLD\_LBF}          & 1.0~lbf --- sustained thrust above this triggers capture \\
+\sw{THRUST\_PRE\_TRIGGER\_MS}             & 1000~ms of pre-trigger data buffered continuously while armed \\
+\sw{THRUST\_SAMPLE\_INTERVAL\_MS}         & 100~ms (10~Hz) --- same averaged read path as Weighing mode \\
+\sw{THRUST\_POST\_TRIGGER\_DURATION\_MS}  & 120{,}000~ms (120~s) --- fixed once triggered, regardless of the thrust profile in between \\
+\sw{THRUST\_NEVER\_TRIGGERED\_TIMEOUT\_MS}& 21{,}000~ms (21~s) --- independent safety net so an armed-but-untriggered bench test (no real force applied) still ends on its own \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\begin{sloppypar}
+\cmd{CAN\_BEGIN\_THRUST\_RECORDING} (or Button~A, bench testing) opens the
+next sequenced \texttt{Thrust\_N.txt} and arms \sw{Thrust\_Buffer}, which
+continuously buffers the trailing \sw{THRUST\_PRE\_TRIGGER\_MS} of samples
+in RAM. Once thrust crosses \sw{THRUST\_ARM\_THRESHOLD\_LBF}, the buffer
+freezes and writes that pre-trigger snapshot, then continues sampling into
+a second linear (non-overwriting) buffer for the fixed post-trigger
+duration. If armed but never triggered, the \emph{never-triggered timeout}
+completes the recording anyway --- without it, a bench test with no real
+force applied would never end, since the post-trigger completion logic
+only starts counting once a trigger has actually occurred. No button is
+watched while in Thrust mode; it only ends via one of these two timers or
+\cmd{CAN\_STOP\_THRUST\_RECORDING}'s manual override.
+\end{sloppypar}
+
+Both timers were revised from the original design during implementation:
+real hardware testing found a sustained-low-thrust auto-cutoff (the
+original design) risked ending a real burn's recording early on a
+transient thrust dip mid-burn, and could never run at all for a bench
+test that never crosses the arm threshold in the first place. The
+two-independent-timer approach above replaced it.
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{Local UI (OLED + Buttons)}
+%═══════════════════════════════════════════════════════════════════════════════
+
+The SH1107 panel is mounted rotated 180\textdegree\ from its natural
+orientation. The idle/run screen has 3 fixed lines: the top line shows
+the 3 individual load-cell readings in fixed-width fields (left to right
+= cells 1, 2, 3); the middle line shows the combined weight/thrust total,
+large, bold, and centered in a fixed-width field so the decimal point
+never shifts, followed by a small gap and a normal-weight \texttt{lbf}
+suffix; the bottom line shows battery voltage right-justified, with the
+remaining left-hand space showing a recording/tare status label when
+applicable.
+
+\begin{center}
+\begin{tabularx}{\textwidth}{@{}lY@{}}
+\toprule
+Button & Action \\
+\midrule
+A & \textbf{Idle only.} Arms thrust recording (bench testing) --- one-shot; the recording ends on its own (see Thrust Mode timers above), not via a second press. \\
+B & \textbf{Idle:} starts weight recording. \textbf{Weighing:} stops it. Ignored while Thrust recording. \\
+C & \textbf{Idle only.} Tare --- see the deliberate on-screen sequence below. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\textbf{Tare sequence} (Button~C, or automatically as the last step of
+\sw{setup()}): shows ``Tare'' for 1~s, then for each of the 3 cells in
+turn, averages \sw{TARE\_SAMPLE\_COUNT} readings, shows
+``\texttt{<N>: <raw average>}'' on the bottom line for 1~s, then moves to
+the next cell. Triggered on press (not release) --- the sequence has its
+own fixed timing regardless of how long the button is physically held.
+
+\begin{notebox}
+An earlier revision let Button~C double as a thrust-stop control, which
+made the tare sequence look broken/inconsistent whenever it fired mid-
+thrust-test. Button~C is now exclusively the tare button, and no button
+is watched at all during Thrust mode.
+\end{notebox}
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{SD Logging}
+%═══════════════════════════════════════════════════════════════════════════════
+
+Three independent, sequentially-numbered file streams on the SD root
+(\sw{Find\_Available\_File()} scans for the lowest unused index):
+
+\begin{center}
+\begin{tabularx}{\textwidth}{@{}lY@{}}
+\toprule
+File & Contents \\
+\midrule
+\texttt{Log\_N.txt}    & General timestamped event log, same convention as EMU/GSEMU/RCU. One file per power cycle, opened at boot. \\
+\texttt{Weight\_N.txt} & Opened on \cmd{CAN\_BEGIN\_WEIGHT\_RECORDING}; one row per 1~Hz sample; closed on stop. \\
+\texttt{Thrust\_N.txt} & Opened on \cmd{CAN\_BEGIN\_THRUST\_RECORDING} (arm); written in the two-stage burst described above; closed at auto-cutoff or manual stop. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+Each data file (\texttt{Weight\_}/\texttt{Thrust\_}) opens with a header
+recording gain, sample rate, excitation voltage, the averaging count, the
+current \sw{LOAD\_CELL\_COUNTS\_PER\_LBF} value, and each channel's tare
+offset in raw counts --- captured at file-open time rather than referenced
+as a constant, since tare offsets change every tare cycle. This lets the
+lbf columns be independently reconstructed later even if calibration is
+subsequently revised. Both raw counts and converted lbf values are logged
+per row for the same reason.
+
+Each mode gets a fresh index the next time it starts, so multiple
+weighings/burns in one power cycle don't overwrite each other.
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{Real-Time Clock}
+%═══════════════════════════════════════════════════════════════════════════════
+
+DS3231, via \sw{RTClib} (the same library RCU uses). On \sw{begin()}, if
+\sw{lostPower()} reports true, the clock is set from compile time
+(\texttt{\_\_DATE\_\_}/\texttt{\_\_TIME\_\_}) --- the same auto-heal
+pattern EMU's PCF8523 uses.
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{Error Handling}
+%═══════════════════════════════════════════════════════════════════════════════
+
+\begin{itemize}[nosep]
+  \item \textbf{I\textsuperscript{2}C failures} (DS3231, mux, or any individual NAU7802): logged to \texttt{Log\_N.txt} and shown on the OLED boot status; LCMU continues in a degraded state (computing weight/thrust from whichever channels still respond) rather than halting.
+  \item \textbf{CAN failures:} \sw{CAN\_Controller.begin()} failure at boot is logged/shown; LCMU continues local operation (buttons, SD logging) without a working bus link.
+  \item \textbf{SD failures:} a failed \sw{SD.begin()} disables file logging but doesn't halt the unit; a failed \sw{SD.open()} for the current mode logs a write-fail message and that recording attempt simply fails (ack~=~fail over CAN) rather than losing buffered data silently.
+\end{itemize}
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{Version History}
+%═══════════════════════════════════════════════════════════════════════════════
+\begin{center}
+\begin{tabularx}{\textwidth}{@{}llY@{}}
+\toprule
+Version & Date & Notes \\
+\midrule
+0.1 & September 2026 & Initial release. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\end{document}

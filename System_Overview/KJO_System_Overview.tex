@@ -16,7 +16,7 @@
   {\docversion}{\docdate}%
   {This document provides a high-level structural and functional overview of the
    KJO control system for a bi-propellant liquid rocket motor.  It describes the
-   three electronic subsystems (RCU, EMU, GSEMU), the propellant flow
+   four electronic subsystems (RCU, EMU, GSEMU, LCMU), the propellant flow
    architecture, the inter-unit communication protocols, and the complete
    command set.  Detailed subsystem reference documents are listed in
    Section~\ref{sec:references}.}
@@ -30,7 +30,7 @@
 
 The KJO system controls a bi-propellant liquid rocket motor using nitrous oxide
 (N\textsubscript{2}O) as the oxidizer and a liquid fuel with regenerative
-cooling.  Three autonomous microcontroller units share control responsibilities:
+cooling.  Four autonomous microcontroller units share control responsibilities:
 
 \begin{itemize}[nosep]
   \item \textbf{Remote Control Unit (RCU)} --- handheld operator terminal.
@@ -38,17 +38,24 @@ cooling.  Three autonomous microcontroller units share control responsibilities:
         on a 3.5\textquotedbl\ colour touchscreen.
   \item \textbf{Engine Management Unit (EMU)} --- mounted in the rocket.
         Receives commands from the RCU, actuates the Oxidizer Feed and Fuel Feed
-        servos, reads all sensors, and coordinates the Fill valve
-        with the GSEMU.
+        servos, reads all sensors, and coordinates the Fill valve and load-cell
+        readings with the GSEMU and LCMU over a shared CAN bus.
   \item \textbf{GSE Management Unit (GSEMU)} --- mounted on the launch pad.
         Controls the Fill valve servo and the umbilical quick-release servo;
-        communicates valve status back to the EMU over a two-wire GPIO
-        handshake.
+        coordinates the fill-to-target sequence with the LCMU and reports
+        status to the EMU, both over the shared CAN bus. A separate,
+        ground-referenced disconnect-sense line (not CAN) gives both EMU and
+        GSEMU instant, protocol-independent detection of umbilical separation.
+  \item \textbf{Load Cell Management Unit (LCMU)} --- mounted on the test
+        stand. Measures Ox load during oxidizer fill (supporting GSEMU's
+        fill-to-target sequence) and thrust during test-stand burns, logging
+        both to microSD; answers CAN queries from EMU and GSEMU.
 \end{itemize}
 
-All three units are based on the Adafruit Feather~M0 (ATSAMD21G18A,
-48~MHz ARM~Cortex-M0+, 3.3~V logic) and run firmware written in C++17
-using the Arduino / PlatformIO framework.
+RCU, EMU, and GSEMU are based on the Adafruit Feather~M0 (ATSAMD21G18A,
+48~MHz ARM~Cortex-M0+, 3.3~V logic); LCMU is based on the Adafruit
+Feather~RP2040 Adalogger (dual-core Cortex-M0+, 133~MHz). All four run
+firmware written in C++17 using the Arduino / PlatformIO framework.
 
 %═══════════════════════════════════════════════════════════════════════════════
 \section{Propellant System}
@@ -112,14 +119,15 @@ pressurization line, eliminating the need for a separate pressurant.
 \label{sec:architecture}
 %═══════════════════════════════════════════════════════════════════════════════
 
-Figure~\ref{fig:control} shows the three-unit electronic control architecture.
+Figure~\ref{fig:control} shows the four-unit electronic control architecture.
 
 \begin{figure}[H]
   \centering
   \resizebox{\textwidth}{!}{\input{fig/control_architecture}}
   \caption{Electronic control architecture. The RCU communicates with the EMU
-           over a 900~MHz LoRa radio link.  The EMU communicates with the
-           GSEMU over a two-wire GPIO handshake (CMD and STATUS).}
+           over a 900~MHz LoRa radio link. EMU, GSEMU, and LCMU share a CAN
+           bus (1~Mbps); a separate ground-referenced line gives EMU and
+           GSEMU instant umbilical disconnect-sense, independent of CAN.}
   \label{fig:control}
 \end{figure}
 
@@ -132,17 +140,20 @@ The link uses the HopeRF RFM95W module (Semtech SX1276 chipset) operating at
 \cmd{HEARTBEAT} response containing valve positions and battery voltage.  Link
 loss is declared after 30~seconds without a response.
 
-\subsection{EMU--GSEMU GPIO Handshake}
+\subsection{EMU--GSEMU--LCMU CAN Bus}
 
-Two digital lines on the MCP23X17 GPIO expander carry the Fill valve handshake:
-\begin{itemize}[nosep]
-  \item \sig{AUX\_IO\_1} (CMD): driven by the EMU; asserted high to command the
-        Fill valve open, de-asserted to close.
-  \item \sig{AUX\_IO\_2} (STATUS): driven by the GSEMU; asserted high when the
-        Fill valve has reached its commanded position.
-\end{itemize}
-Additional GPIO lines (\sig{AUX\_IO\_3}, \sig{AUX\_IO\_4}) are reserved for the
-umbilical-release handshake (future implementation).
+EMU, GSEMU, and LCMU share one CAN bus (MCP2515 controllers, 1~Mbps,
+node IDs EMU~=~1, GSEMU~=~2, LCMU~=~3) --- addressed command/response only,
+no unsolicited broadcasts. This replaced an earlier wired GPIO CMD/STATUS
+handshake that carried Fill-valve coordination directly between EMU and
+GSEMU; that handshake's two lines (\sig{AUX\_IO\_1}/\sig{AUX\_IO\_2} on
+EMU's MCP23X17 GPIO expander) are retired. Full command tables and protocol
+details for each unit are in their own reference documents
+(Section~\ref{sec:references}).
+
+Separately, a ground-referenced disconnect-sense line on each side of the
+EMU--GSEMU umbilical (not CAN) gives both units instant physical-disconnect
+detection independent of bus traffic or timeout logic.
 
 %═══════════════════════════════════════════════════════════════════════════════
 \section{Shared Libraries}
@@ -150,19 +161,20 @@ umbilical-release handshake (future implementation).
 %═══════════════════════════════════════════════════════════════════════════════
 
 Common definitions reside in \texttt{KJO\_Shared\_Libraries} and are shared
-across all three firmware projects via PlatformIO library dependencies:
+across all four firmware projects via PlatformIO library dependencies:
 
 \begin{center}
-\begin{tabular}{@{}lll@{}}
+\begin{tabularx}{\textwidth}{@{}lYl@{}}
 \toprule
 Library & Contents & Used by \\
 \midrule
-\sw{KJO\_System\_Config}  & Platform IDs, version strings      & RCU, EMU, GSEMU \\
-\sw{KJO\_Command\_Defs}   & Command codes, packet structs       & RCU, EMU \\
+\sw{KJO\_System\_Config}  & Platform IDs, version strings      & RCU, EMU, GSEMU, LCMU \\
+\sw{KJO\_Command\_Defs}   & LoRa command codes, packet structs  & RCU, EMU \\
+\sw{KJO\_CAN\_Command\_Defs} & CAN command codes, packet structs, node IDs & EMU, GSEMU, LCMU \\
 \sw{KJO\_Radio}           & Radio pin assignments, frequency    & RCU, EMU \\
 \sw{KJO\_RCU\_Display}    & TFT GUI functions and data types    & RCU \\
 \bottomrule
-\end{tabular}
+\end{tabularx}
 \end{center}
 
 %═══════════════════════════════════════════════════════════════════════════════
@@ -190,7 +202,9 @@ Three binary packet types are used on the radio link:
 
 \subsection{Command Table}
 
-\begin{longtable}{@{}rllll@{}}
+\begingroup
+\footnotesize
+\begin{longtable}{@{}rlp{2.1cm}p{1.3cm}p{5.0cm}@{}}
 \toprule
 Code & Name & Direction & \texttt{param} & Description \\
 \midrule
@@ -222,6 +236,7 @@ Code & Name & Direction & \texttt{param} & Description \\
 23 & \cmd{HEARTBEAT}             & Bidirectional & ---  & Keepalive / link maintenance \\
 24 & \cmd{RCU\_STATUS}           & RCU$\to$EMU & ---   & Request full status packet \\
 \end{longtable}
+\endgroup
 
 %═══════════════════════════════════════════════════════════════════════════════
 \section{Document References}
@@ -229,15 +244,16 @@ Code & Name & Direction & \texttt{param} & Description \\
 %═══════════════════════════════════════════════════════════════════════════════
 
 \begin{center}
-\begin{tabular}{@{}lll@{}}
+\begin{tabularx}{\textwidth}{@{}llY@{}}
 \toprule
 Document & File & Contents \\
 \midrule
 RCU Reference   & \texttt{RCU/KJO\_RCU\_Reference.pdf}   & Hardware, software, GUI \\
 EMU Reference   & \texttt{EMU/KJO\_EMU\_Reference.pdf}   & Hardware, software, valve control \\
 GSEMU Reference & \texttt{GSEMU/KJO\_GSEMU\_Reference.pdf} & Hardware, software, Fill valve \\
+LCMU Reference  & \texttt{LCMU/KJO\_LCMU\_Reference.pdf} & Hardware, software, CAN bus, load cells \\
 \bottomrule
-\end{tabular}
+\end{tabularx}
 \end{center}
 
 %═══════════════════════════════════════════════════════════════════════════════

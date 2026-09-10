@@ -32,7 +32,7 @@
 \node[hwblock, minimum width=3.7cm] (emu_sd) at (6.5, -4.0) {SD + RTC};
 \node[powerblock, minimum width=3.7cm] (emu_bat) at (6.5, -4.8) {LiPo Battery};
 
-%── GSEMU (right) ─────────────────────────────────────────────────────────────
+%── GSEMU (right of EMU) ──────────────────────────────────────────────────────
 \node[rectangle, draw=KJOgreen, line width=1.5pt, fill=KJOgreen!5,
       rounded corners=6pt, minimum width=4.0cm, minimum height=5.5cm,
       font=\small\bfseries, align=center, label={[font=\small\bfseries,
@@ -45,6 +45,19 @@
 \node[hwblock, minimum width=3.5cm] (gse_sd) at (13.0, -1.5) {SD + RTC};
 \node[powerblock, minimum width=3.5cm] (gse_bat) at (13.0, -2.4) {LiPo Battery};
 
+%── LCMU (right of GSEMU) ─────────────────────────────────────────────────────
+\node[rectangle, draw=KJOpurple, line width=1.5pt, fill=KJOpurple!5,
+      rounded corners=6pt, minimum width=4.0cm, minimum height=5.5cm,
+      font=\small\bfseries, align=center, label={[font=\small\bfseries,
+      text=KJOpurple]above:Load Cell Mgmt Unit (LCMU)}]
+  (lcmu) at (19.5, 0) {};
+
+\node[mcublock, minimum width=3.5cm] (lcmu_mcu)  at (19.5, 1.8) {Feather RP2040\\Adalogger};
+\node[hwblock, minimum width=3.5cm]  (lcmu_oled) at (19.5, 0.6) {SH1107 OLED};
+\node[hwblock, minimum width=3.5cm]  (lcmu_cell) at (19.5, -0.5) {Mux + 3$\times$NAU7802\\(Load Cells)};
+\node[hwblock, minimum width=3.5cm]  (lcmu_sd)   at (19.5, -1.6) {SD + RTC};
+\node[powerblock, minimum width=3.5cm] (lcmu_bat) at (19.5, -2.4) {LiPo Battery};
+
 %── LoRa Link (RCU ↔ EMU) ─────────────────────────────────────────────────────
 \draw[radioline]
   (rcu.east |- rcu_rad) -- (emu.west |- emu_rad)
@@ -53,18 +66,28 @@
 \node[font=\tiny, text=KJOgray, align=center]
   at (3.25, 0.55) {Commands\\Responses};
 
-%── GPIO Handshake (EMU ↔ GSEMU) ──────────────────────────────────────────────
-% CMD line: EMU → GSEMU
-\draw[gpioline]
-  ([yshift=5pt]  emu.east |- emu_gpio) --
-  ([yshift=5pt]  gsemu.west |- emu_gpio)
-  node[midway, above, font=\tiny, text=KJOgreen!70!black] {CMD (AUX\_IO\_1)};
+%── CAN Bus (EMU -- GSEMU -- LCMU) ────────────────────────────────────────────
+% Shared bus, not point-to-point: replaces the retired CMD/STATUS GPIO
+% handshake for Fill-valve coordination, and is LCMU's only link to the
+% other two units. Drawn as one bus line with tap stubs, matching CAN's
+% actual multi-drop topology rather than the old wired handshake's
+% point-to-point arrows.
+% Routed below all three outer boxes (clear of every inner node) rather
+% than through their interior -- GSEMU/LCMU tap in via a short vertical
+% stub from their box's south edge; EMU's box already extends past this
+% height, so its east-edge border point is used directly, no stub needed.
+\coordinate (canbus_y) at (0, -3.3);
+\draw[busline, -, line width=2pt]
+  (emu.east |- canbus_y) -- (lcmu.east |- canbus_y)
+  node[midway, below, font=\tiny, text=KJOgray] {CAN bus (1 Mbps)};
+\draw[busline, -] (gsemu.south) -- (gsemu.south |- canbus_y);
+\draw[busline, -] (lcmu.south)  -- (lcmu.south  |- canbus_y);
 
-% STATUS line: GSEMU → EMU
-\draw[gpioline, draw=KJOblue!60, {Stealth[length=5pt,width=4pt]}-]
-  ([yshift=-5pt] emu.east |- emu_gpio) --
-  ([yshift=-5pt] gsemu.west |- emu_gpio)
-  node[midway, below, font=\tiny, text=KJOblue!70] {STATUS (AUX\_IO\_2)};
+%── Umbilical disconnect-sense (EMU <-> GSEMU only, separate from CAN) ────────
+\draw[gpioline, draw=KJOgray!70, -, dashed]
+  ([yshift=-14pt] emu.east |- emu_gpio) --
+  ([yshift=-14pt] gsemu.west |- emu_gpio)
+  node[midway, below, font=\tiny, text=KJOgray!70!black] {disconnect sense (ground-ref.)};
 
 %── Physical separation note ──────────────────────────────────────────────────
 \node[font=\footnotesize\itshape, text=KJOgray, align=center]
@@ -72,7 +95,9 @@
 \node[font=\footnotesize\itshape, text=KJOgray, align=center]
   at (6.5, -5.85) {In-rocket};
 \node[font=\footnotesize\itshape, text=KJOgray, align=center]
-  at (13.0, -3.6) {Launch pad\\(ground)};
+  at (13.0, -4.3) {Launch pad\\(ground)};
+\node[font=\footnotesize\itshape, text=KJOgray, align=center]
+  at (19.5, -4.3) {Test stand};
 
 %── Ground line ───────────────────────────────────────────────────────────────
 \draw[KJOgray!40, line width=0.8pt, dashed]
