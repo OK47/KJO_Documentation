@@ -1,7 +1,7 @@
-\documentclass[11pt,letterpaper]{article}
+﻿\documentclass[11pt,letterpaper]{article}
 \input{../shared/KJO_preamble}
-\newcommand{\docversion}{0.6}
-\newcommand{\docdate}{March 2026}
+\newcommand{\docversion}{0.8}
+\newcommand{\docdate}{September 2026}
 \lhead{\textsc{KJO Engine Management Unit}}
 \rhead{\textsc{EMU Reference} --- v\docversion}
 \cfoot{\thepage\ of \pageref{LastPage}}
@@ -600,6 +600,216 @@ Each record is time-stamped (PCF8523) and records command receipt, valve
 movements, sensor readings, and fault events.
 
 %═══════════════════════════════════════════════════════════════════════════════
+\section{Parameters \& Flags}
+%═══════════════════════════════════════════════════════════════════════════════
+
+This section collects the tunable operational parameters and feature flags
+compiled into this firmware image, together with the source file where each
+is defined. It is meant as a single reference point when tracing or changing
+a timing, threshold, or calibration value. Pin/channel wiring assignments,
+LoRa/CAN command opcodes, and packet byte layouts are documented separately
+(the Hardware Overview pin map and the Command Set sections above) and are
+not repeated here. Parameters marked \emph{(shared)} are defined in
+\sw{KJO\_\allowbreak Shared\_\allowbreak Libraries} and must agree with the same constant used on
+the other board(s) that consume it.
+
+\subsubsection*{Valve Servo Timing \& Calibration}
+
+\begingroup
+\footnotesize
+\begin{longtable}{@{}p{3.2cm}p{2.4cm}p{6.2cm}p{2.6cm}@{}}
+\toprule
+Parameter & Value & Description & Source File \\
+\midrule
+\texttt{SERVO\_\allowbreak FREQUENCY} & 1100~Hz & Non-standard PWM frequency (vs.\ 50~Hz) chosen to compress the usable PWM count range and improve position resolution over the servo's $\sim$1.1-turn travel. & \texttt{KJO\_\allowbreak Valve.h} \\
+\texttt{SERVO\_\allowbreak RANGE\_\allowbreak MIN} & 500~$\mu$s & Pulse width at the servo's lower mechanical travel limit. & \texttt{KJO\_\allowbreak Valve.h} \\
+\texttt{SERVO\_\allowbreak RANGE\_\allowbreak MAX} & 2500~$\mu$s & Pulse width at the servo's upper mechanical travel limit. & \texttt{KJO\_\allowbreak Valve.h} \\
+\texttt{SERVO\_\allowbreak FULL\_\allowbreak RANGE\_\allowbreak DEGREES} & 1800\textdegree & Total mechanical travel of the 5-turn servo used for position-mapping math. & \texttt{KJO\_\allowbreak Valve.h} \\
+\texttt{SERVO\_\allowbreak PINION\_\allowbreak TEETH} & 16 & Tooth count of the servo output pinion gear, used in valve gearing geometry. & \texttt{KJO\_\allowbreak Valve.h} \\
+\texttt{VALVE\_\allowbreak GEAR\_\allowbreak TEETH} & 60 & Tooth count of the valve actuator gear; combined with pinion teeth sets the 60:16 gear ratio. & \texttt{KJO\_\allowbreak Valve.h} \\
+\texttt{VALVE\_\allowbreak TURN\_\allowbreak DEGREES} & 90\textdegree & Valve rotational travel from full open to full closed. & \texttt{KJO\_\allowbreak Valve.h} \\
+\texttt{OX\_\allowbreak VALVE\_\allowbreak PWM\_\allowbreak OPEN} & 2200 & 12-bit PWM count for the Ox valve's fully-open servo position. & \texttt{KJO\_\allowbreak Valve.h} \\
+\texttt{OX\_\allowbreak VALVE\_\allowbreak PWM\_\allowbreak CLOSE} & 3800 & 12-bit PWM count for the Ox valve's fully-closed servo position. & \texttt{KJO\_\allowbreak Valve.h} \\
+\texttt{OX\_\allowbreak VALVE\_\allowbreak POS\_\allowbreak OPEN} & 1141 & ADC count from the Ox valve position pot when fully open. & \texttt{KJO\_\allowbreak Valve.h} \\
+\texttt{OX\_\allowbreak VALVE\_\allowbreak POS\_\allowbreak CLOSED} & 2898 & ADC count from the Ox valve position pot when fully closed. & \texttt{KJO\_\allowbreak Valve.h} \\
+\texttt{OX\_\allowbreak VALVE\_\allowbreak BALL\_\allowbreak DIAMETER} & 0.611~in & Ball outer diameter used in the Ox valve's angle-based flow-position geometry calculation. & \texttt{KJO\_\allowbreak Valve.h} \\
+\texttt{OX\_\allowbreak VALVE\_\allowbreak BORE\_\allowbreak DIAMETER} & 0.357~in & Bore diameter used in the Ox valve's flow-position geometry calculation. & \texttt{KJO\_\allowbreak Valve.h} \\
+\texttt{OX\_\allowbreak VALVE\_\allowbreak THROAT\_\allowbreak DIAMETER} & 0.373~in & Throat inner diameter used in the Ox valve's flow-position geometry calculation. & \texttt{KJO\_\allowbreak Valve.h} \\
+\texttt{FUEL\_\allowbreak VALVE\_\allowbreak PWM\_\allowbreak OPEN} & 2200 & 12-bit PWM count for the Fuel valve's fully-open servo position. & \texttt{KJO\_\allowbreak Valve.h} \\
+\texttt{FUEL\_\allowbreak VALVE\_\allowbreak PWM\_\allowbreak CLOSE} & 3800 & 12-bit PWM count for the Fuel valve's fully-closed servo position. & \texttt{KJO\_\allowbreak Valve.h} \\
+\texttt{FUEL\_\allowbreak VALVE\_\allowbreak POS\_\allowbreak OPEN} & 1108 & ADC count from the Fuel valve position pot when fully open. & \texttt{KJO\_\allowbreak Valve.h} \\
+\texttt{FUEL\_\allowbreak VALVE\_\allowbreak POS\_\allowbreak CLOSED} & 2786 & ADC count from the Fuel valve position pot when fully closed. & \texttt{KJO\_\allowbreak Valve.h} \\
+\texttt{FUEL\_\allowbreak VALVE\_\allowbreak BALL\_\allowbreak DIAMETER} & 0.611~in & Ball outer diameter used in the Fuel valve's flow-position geometry calculation. & \texttt{KJO\_\allowbreak Valve.h} \\
+\texttt{FUEL\_\allowbreak VALVE\_\allowbreak BORE\_\allowbreak DIAMETER} & 0.357~in & Bore diameter used in the Fuel valve's flow-position geometry calculation. & \texttt{KJO\_\allowbreak Valve.h} \\
+\texttt{FUEL\_\allowbreak VALVE\_\allowbreak THROAT\_\allowbreak DIAMETER} & 0.373~in & Throat inner diameter used in the Fuel valve's flow-position geometry calculation. & \texttt{KJO\_\allowbreak Valve.h} \\
+\texttt{VALVE\_\allowbreak MOVE\_\allowbreak TIMEOUT\_\allowbreak MS} (alias \texttt{MOVE\_\allowbreak TIMEOUT}) & 2500~ms & Maximum time allowed for a commanded valve move to complete before the watchdog gives up; shared with GSEMU since both use the identical servo/gear actuator. & \texttt{KJO\_\allowbreak Valve\_\allowbreak Timing.h} (shared) \\
+\texttt{VALVE\_\allowbreak POSITION\_\allowbreak AVERAGING\_\allowbreak COUNT} & 4 & Number of ADC reads averaged for each valve position sample. & \texttt{KJO\_\allowbreak Valve.h} \\
+\texttt{VALVE\_\allowbreak MOVING\_\allowbreak THRESHOLD} & 2~counts & Minimum encoder delta between samples required to consider the valve still moving. & \texttt{KJO\_\allowbreak Valve.h} \\
+\texttt{VALVE\_\allowbreak POSITION\_\allowbreak DEAD\_\allowbreak BAND} & 15~counts & Position tolerance used to decide whether a valve has reached its open/closed target. & \texttt{KJO\_\allowbreak Valve.h} \\
+\texttt{MOVE\_\allowbreak DETECT\_\allowbreak WAIT} & 30~ms & Minimum interval between successive encoder samples inside \sw{isMoving()}. & \texttt{KJO\_\allowbreak Valve.h} \\
+\texttt{MOVE\_\allowbreak AFTER\_\allowbreak START\_\allowbreak WAIT} & 60~ms & Blocking delay after issuing a servo PWM command, giving the servo time to begin responding before motion is sampled. & \texttt{KJO\_\allowbreak Valve.h} \\
+\texttt{USE\_\allowbreak MAPPING} & \texttt{true} & Selects angle-geometry-based valve position mapping over simple linear PWM interpolation. & \texttt{KJO\_\allowbreak System\_\allowbreak Config.h} (shared) \\
+\end{longtable}
+\endgroup
+
+\subsubsection*{Pressure Sensing \& Calibration}
+
+\begingroup
+\footnotesize
+\begin{longtable}{@{}p{3.2cm}p{2.4cm}p{6.2cm}p{2.6cm}@{}}
+\toprule
+Parameter & Value & Description & Source File \\
+\midrule
+\texttt{PRESSURE\_\allowbreak AVERAGING\_\allowbreak COUNT} & 4 & Number of ADS1015 reads averaged per pressure measurement. & \texttt{KJO\_\allowbreak Pressure.h} \\
+\texttt{CHAMBER\_\allowbreak PRESSURE\_\allowbreak SLOPE} & 0.137533 & Bench-calibrated linear-fit slope (PSI per ADC count) for the chamber pressure transducer. & \texttt{KJO\_\allowbreak Pressure.h} \\
+\texttt{CHAMBER\_\allowbreak PRESSURE\_\allowbreak INTERCEPT} & $-$25.012515 & Bench-calibrated linear-fit intercept (PSI at 0 counts) for the chamber pressure transducer. & \texttt{KJO\_\allowbreak Pressure.h} \\
+\texttt{TANK\_\allowbreak PRESSURE\_\allowbreak SLOPE} & 0.688427 & Bench-calibrated linear-fit slope (PSI per ADC count) for the Ox tank pressure transducer. & \texttt{KJO\_\allowbreak Pressure.h} \\
+\texttt{TANK\_\allowbreak PRESSURE\_\allowbreak INTERCEPT} & $-$124.131326 & Bench-calibrated linear-fit intercept (PSI at 0 counts) for the Ox tank pressure transducer. & \texttt{KJO\_\allowbreak Pressure.h} \\
+\texttt{TANK\_\allowbreak MAX\_\allowbreak PSI} & 1000~PSI & Full-scale rating of the tank pressure transducer, used for header/documentation purposes. & \texttt{KJO\_\allowbreak Pressure.h} \\
+\texttt{CHAMBER\_\allowbreak MAX\_\allowbreak PSI} & 200~PSI & Full-scale rating of the chamber pressure transducer, used for header/documentation purposes. & \texttt{KJO\_\allowbreak Pressure.h} \\
+\texttt{PRESSURE\_\allowbreak WARNING\_\allowbreak THRESHOLD} & 15~PSI & Tank pressure above which the red indicator and pressure-alarm buzzer activate, and below which recording auto-stops. & \texttt{KJO\_\allowbreak Pressure.h} \\
+\texttt{PRESSURE\_\allowbreak CHECK\_\allowbreak INTERVAL\_\allowbreak MS} & 250~ms & Poll interval for the unconditional tank-pressure safety check (\sw{Check\_\allowbreak Pressure\_\allowbreak Warning()}). & \texttt{KJO\_\allowbreak Pressure.h} \\
+\texttt{ABORT\_\allowbreak VENTED\_\allowbreak THRESHOLD\_\allowbreak PSI} & 5~PSI & Tank gauge pressure below which an in-progress Abort's vent-wait step considers the tank vented and latches. & \texttt{KJO\_\allowbreak Pressure.h} \\
+\texttt{MAX\_\allowbreak OX\_\allowbreak TANK\_\allowbreak PRESSURE} & 950~PSI & Sustained Ox-tank gauge pressure threshold that triggers an automatic Abort. & \texttt{KJO\_\allowbreak Pressure.h} \\
+\texttt{OX\_\allowbreak TANK\_\allowbreak PRESSURE\_\allowbreak TIME\_\allowbreak MS} & 1000~ms & How long the Ox tank must remain at/above \texttt{MAX\_\allowbreak OX\_\allowbreak TANK\_\allowbreak PRESSURE} before the automatic abort fires. & \texttt{KJO\_\allowbreak Pressure.h} \\
+\texttt{AD\_\allowbreak BASE\_\allowbreak SCALE} & 0.00199144777 V/count & ADS1015 volts-per-count scale factor at PGA gain 1, used for battery-voltage conversion. & \texttt{KJO\_\allowbreak Analog.h} \\
+\texttt{LIPO\_\allowbreak SCALE} & 2.79111 & Resistor-divider scale factor converting the ADS1015 LiPo channel reading to actual battery voltage. & \texttt{KJO\_\allowbreak Analog.h} \\
+\texttt{AIRSTART\_\allowbreak THRESHOLD} (alias of \texttt{LCO\_\allowbreak SENSE\_\allowbreak THRESHOLD}) & 251~counts & ADC-count threshold above which the Airstart/LCO sense channel is considered triggered ($\sim$0.5~V post-divider). & \texttt{KJO\_\allowbreak LCO\_\allowbreak Sense.h} (shared) \\
+\end{longtable}
+\endgroup
+
+\subsubsection*{Thermocouple Sensing}
+
+\begingroup
+\footnotesize
+\begin{longtable}{@{}p{3.2cm}p{2.4cm}p{6.2cm}p{2.6cm}@{}}
+\toprule
+Parameter & Value & Description & Source File \\
+\midrule
+\texttt{TEMPERATURE\_\allowbreak TC\_\allowbreak AVERAGING\_\allowbreak COUNT} & 4 & Number of thermocouple readings averaged per measurement (declared but not yet wired into a read path). & \texttt{KJO\_\allowbreak Thermocouple.h} \\
+\end{longtable}
+\endgroup
+
+\subsubsection*{Engine Start Sequence Timing}
+
+\begingroup
+\footnotesize
+\begin{longtable}{@{}p{3.2cm}p{2.4cm}p{6.2cm}p{2.6cm}@{}}
+\toprule
+Parameter & Value & Description & Source File \\
+\midrule
+\texttt{IGNITER\_\allowbreak FIRE\_\allowbreak DURATION\_\allowbreak MS} & 2000~ms & Duration the igniter relay stays energized to reliably light the solid starter motor. & \texttt{main.cpp} \\
+\texttt{START\_\allowbreak DWELL\_\allowbreak MS} & 2000~ms & Fixed pause after confirmed umbilical separation before propellant flow begins. & \texttt{main.cpp} \\
+\texttt{FUEL\_\allowbreak FLOW\_\allowbreak DELAY\_\allowbreak MS} & 500~ms & Placeholder transit-time allowance after Fuel valve confirms open, before proceeding (pending cold-flow calibration). & \texttt{main.cpp} \\
+\texttt{OX\_\allowbreak FLOW\_\allowbreak DELAY\_\allowbreak MS} & 200~ms & Placeholder transit-time allowance after Ox valve confirms open, before igniter fires (pending cold-flow calibration). & \texttt{main.cpp} \\
+\texttt{QR\_\allowbreak RELEASE\_\allowbreak TIMEOUT\_\allowbreak MS} & 3000~ms & Maximum time to wait for physical umbilical separation after commanding QR release, before aborting the start sequence. & \texttt{main.cpp} \\
+\texttt{ABORT\_\allowbreak VALVE\_\allowbreak CONFIRM\_\allowbreak TIMEOUT\_\allowbreak MS} & \texttt{MOVE\_\allowbreak TIMEOUT} + 100~ms (2600~ms) & Watchdog for each Abort-sequence valve-close/open confirmation step. & \texttt{main.cpp} \\
+\texttt{EMU\_\allowbreak GSEMU\_\allowbreak TIMEOUT\_\allowbreak MS} & 200~ms & CAN round-trip timeout for ordinary EMU-to-GSEMU relay requests (no chaining through GSEMU). & \texttt{main.cpp} \\
+\texttt{EMU\_\allowbreak LCMU\_\allowbreak TIMEOUT\_\allowbreak MS} & 200~ms & CAN round-trip timeout for ordinary EMU-to-LCMU relay requests. & \texttt{main.cpp} \\
+\texttt{EMU\_\allowbreak GSEMU\_\allowbreak FILL\_\allowbreak VALVE\_\allowbreak MOVE\_\allowbreak TIMEOUT\_\allowbreak MS} & \texttt{MOVE\_\allowbreak TIMEOUT} + 300~ms (2800~ms) & CAN timeout for GSEMU Fill-valve open/close requests, sized to cover GSEMU's own valve-move watchdog plus round-trip margin. & \texttt{main.cpp} \\
+\texttt{Motor\_\allowbreak Ox\_\allowbreak Fill\_\allowbreak Target\_\allowbreak Lbm()} values (L/M/N/O) & 7.026 / 14.053 / 28.106 / 58.219~lbm & Per-motor-designation Ox fill target weight EMU's fill session compares polled LCMU readings against. & \texttt{main.cpp} \\
+\texttt{SELECTED\_\allowbreak MOTOR} & \texttt{Motor\_\allowbreak Designation::M} & Selects which motor's Ox fill target is active for the current test article; changed per test. & \texttt{main.cpp} \\
+\end{longtable}
+\endgroup
+
+\subsubsection*{Abort / Indicator / Buzzer Timing}
+
+\begingroup
+\footnotesize
+\begin{longtable}{@{}p{3.2cm}p{2.4cm}p{6.2cm}p{2.6cm}@{}}
+\toprule
+Parameter & Value & Description & Source File \\
+\midrule
+\texttt{LINK\_\allowbreak LOS\_\allowbreak INTERVAL\_\allowbreak MS} & 15000~ms & Time without a received radio packet before the RCU link is declared lost. & \texttt{main.cpp} \\
+\texttt{ALIVE\_\allowbreak BEEP\_\allowbreak INTERVAL\_\allowbreak MS} & 10000~ms & Period of the idle ``I'm alive'' buzzer beep. & \texttt{main.cpp} \\
+\texttt{FILL\_\allowbreak BEEP\_\allowbreak INTERVAL\_\allowbreak MS} & 2000~ms & Period of the buzzer beep while a fill session is active (filling or paused), replacing the alive beep. & \texttt{main.cpp} \\
+\texttt{ABORT\_\allowbreak LATCH\_\allowbreak COLOR\_\allowbreak INTERVAL\_\allowbreak MS} & 1000~ms & Red/yellow alternation period (per color) for the indicator once ABORT\_\allowbreak LATCHED. & \texttt{main.cpp} \\
+\texttt{BOOT\_\allowbreak RETRY\_\allowbreak BACKOFF\_\allowbreak MS} & 3000~ms & Delay before retrying a timed-out boot-time CAN presence ping (GSEMU/LCMU). & \texttt{main.cpp} \\
+\texttt{PRESENCE\_\allowbreak PING\_\allowbreak TIMEOUT\_\allowbreak MS} & 200~ms & CAN round-trip timeout for the runtime GSEMU/LCMU presence ping. & \texttt{main.cpp} \\
+\texttt{PRESENCE\_\allowbreak PING\_\allowbreak INTERVAL\_\allowbreak MS} & 2000~ms & Interval between successive full GSEMU+LCMU presence-ping cycles. & \texttt{main.cpp} \\
+\texttt{FILL\_\allowbreak POLL\_\allowbreak INTERVAL\_\allowbreak MS} & 200~ms & Poll interval for the background LCMU weight query during an active fill. & \texttt{main.cpp} \\
+\end{longtable}
+\endgroup
+
+\subsubsection*{Continuous Sensor Recording / Burn Data Capture}
+
+\begingroup
+\footnotesize
+\begin{longtable}{@{}p{3.2cm}p{2.4cm}p{6.2cm}p{2.6cm}@{}}
+\toprule
+Parameter & Value & Description & Source File \\
+\midrule
+\texttt{PRESSURE\_\allowbreak RECORDING\_\allowbreak INTERVAL\_\allowbreak MS} & 250~ms & Sample period for continuous pressure/temperature recording while active. & \texttt{main.cpp} \\
+\texttt{PRESSURE\_\allowbreak AMBIENT\_\allowbreak COUNT} & 4 & Consecutive below-threshold pressure samples required to confirm ambient and auto-stop recording. & \texttt{main.cpp} \\
+\texttt{BURN\_\allowbreak TRIGGER\_\allowbreak DELTA\_\allowbreak PSI} & 5.0~PSI & Chamber gauge pressure rise above tared ambient that starts the burn-trigger sustain timer. & \texttt{main.cpp} \\
+\texttt{BURN\_\allowbreak TRIGGER\_\allowbreak SUSTAIN\_\allowbreak MS} & 1000~ms & How long chamber pressure must stay above \texttt{BURN\_\allowbreak TRIGGER\_\allowbreak DELTA\_\allowbreak PSI} before the burn recording is considered triggered. & \texttt{main.cpp} \\
+\texttt{BURN\_\allowbreak SAMPLE\_\allowbreak INTERVAL\_\allowbreak MS} & 100~ms (10~Hz) & Sample rate for burn-data capture. & \texttt{main.cpp} \\
+\texttt{BURN\_\allowbreak PRE\_\allowbreak TRIGGER\_\allowbreak MS} & 10000~ms & Amount of pre-trigger history retained in the burn ring buffer. & \texttt{main.cpp} \\
+\texttt{BURN\_\allowbreak POST\_\allowbreak TRIGGER\_\allowbreak DURATION\_\allowbreak MS} & 30000~ms & Fixed capture duration after the burn trigger fires. & \texttt{main.cpp} \\
+\texttt{BURN\_\allowbreak NEVER\_\allowbreak TRIGGERED\_\allowbreak TIMEOUT\_\allowbreak MS} & 60000~ms & Safety-net duration after arming; if the burn never triggers, recording completes anyway. & \texttt{main.cpp} \\
+\texttt{BURN\_\allowbreak BUFFER\_\allowbreak MAX\_\allowbreak POST\_\allowbreak SAMPLES} & 300 (30~s @ 10~Hz) & Fixed capacity of the post-trigger burn sample buffer. & \texttt{KJO\_\allowbreak Burn\_\allowbreak Buffer.h} \\
+\texttt{BURN\_\allowbreak BUFFER\_\allowbreak MAX\_\allowbreak PRE\_\allowbreak SAMPLES} & 100 (10~s @ 10~Hz) & Fixed capacity of the pre-trigger burn ring buffer. & \texttt{KJO\_\allowbreak Burn\_\allowbreak Buffer.h} \\
+\texttt{BURN\_\allowbreak BUFFER\_\allowbreak NUM\_\allowbreak CHANNELS} & 4 & Number of sensor channels stored per burn sample (tank PSI, chamber PSI, Temp1, Temp2). & \texttt{KJO\_\allowbreak Burn\_\allowbreak Buffer.h} \\
+\end{longtable}
+\endgroup
+
+\subsubsection*{ADC Diagnostic Mode (bench-only, compiled out by default)}
+
+\begingroup
+\footnotesize
+\begin{longtable}{@{}p{3.2cm}p{2.4cm}p{6.2cm}p{2.6cm}@{}}
+\toprule
+Parameter & Value & Description & Source File \\
+\midrule
+\texttt{ADS\_\allowbreak DIAG\_\allowbreak LSB\_\allowbreak V} & 4.096/2048 V/count & ADS1015 GAIN\_\allowbreak ONE LSB voltage used to back-calculate connector voltage during bench diagnostics. & \texttt{main.cpp} \\
+\texttt{ADS\_\allowbreak DIAG\_\allowbreak DIV\_\allowbreak INV} & 4.5/3.3 & Voltage-divider inverse ratio for the chamber channel diagnostic readback. & \texttt{main.cpp} \\
+\texttt{ADS\_\allowbreak DIAG\_\allowbreak DIV\_\allowbreak INV\_\allowbreak TANK} & $(4.5\times3.290)/(3.3\times3.267) \approx 1.37324$ & Bench-trimmed voltage-divider inverse ratio for the tank channel diagnostic readback. & \texttt{main.cpp} \\
+\texttt{ADC\_\allowbreak DIAG\_\allowbreak INTERVAL\_\allowbreak MS} & 2000~ms & How often the ADC diagnostic reading is printed to the OLED. & \texttt{main.cpp} \\
+\end{longtable}
+\endgroup
+
+\subsubsection*{Radio Communication}
+
+\begingroup
+\footnotesize
+\begin{longtable}{@{}p{3.2cm}p{2.4cm}p{6.2cm}p{2.6cm}@{}}
+\toprule
+Parameter & Value & Description & Source File \\
+\midrule
+\texttt{RCS\_\allowbreak CENTER\_\allowbreak FREQUENCY} & 917.117~MHz & LoRa center frequency; must match between EMU and RCU radios to communicate. & \texttt{KJO\_\allowbreak Radio.h} (shared) \\
+\texttt{TRANSMIT\_\allowbreak POWER} & 5~dBm & LoRa transmit power setting (valid range 5--23~dBm via PA\_\allowbreak BOOST). & \texttt{KJO\_\allowbreak Radio.h} (shared) \\
+\texttt{LINK\_\allowbreak MARGINAL\_\allowbreak THRESHOLD} & $-$90~dBm & RSSI below which the link-quality indicator shows MARGINAL rather than OK. & \texttt{KJO\_\allowbreak Radio.h} (shared) \\
+\texttt{MAX\_\allowbreak PAYLOAD\_\allowbreak LENGTH} & 64~bytes & Maximum LoRa packet payload size EMU/RCU buffers allocate (headroom under RadioHead's 251-byte ceiling). & \texttt{KJO\_\allowbreak Command\_\allowbreak Defs.h} (shared) \\
+\texttt{MAX\_\allowbreak COMMAND\_\allowbreak CODE} & 39 & Highest valid LoRa command code, used to range-check incoming packets. & \texttt{KJO\_\allowbreak Command\_\allowbreak Defs.h} (shared) \\
+\end{longtable}
+\endgroup
+
+\subsubsection*{CAN Bus Communication Timing}
+
+\begingroup
+\footnotesize
+\begin{longtable}{@{}p{3.2cm}p{2.4cm}p{6.2cm}p{2.6cm}@{}}
+\toprule
+Parameter & Value & Description & Source File \\
+\midrule
+\texttt{CAN\_\allowbreak BAUDRATE} & 1{,}000{,}000~bps & CAN bus bit rate shared by EMU/GSEMU/LCMU; raised from 250~kbps, safely within spec for the installation's short (16~ft max) bus runs. & \texttt{KJO\_\allowbreak CAN\_\allowbreak Command\_\allowbreak Defs.h} (shared) \\
+\texttt{CAN\_\allowbreak MAX\_\allowbreak COMMAND\_\allowbreak CODE} & 23 & Highest valid CAN command code, used to bounds-check inbound frames before name-table lookup. & \texttt{KJO\_\allowbreak CAN\_\allowbreak Command\_\allowbreak Defs.h} (shared) \\
+\end{longtable}
+\endgroup
+
+\subsubsection*{SD Logging}
+
+\begingroup
+\footnotesize
+\begin{longtable}{@{}p{3.2cm}p{2.4cm}p{6.2cm}p{2.6cm}@{}}
+\toprule
+Parameter & Value & Description & Source File \\
+\midrule
+\texttt{LOG\_\allowbreak FILE\_\allowbreak NAME\_\allowbreak BASE} & \texttt{"Log\_\allowbreak "} & Base filename prefix for sequentially-numbered SD log files (e.g.\ \texttt{Log\_\allowbreak 0.txt}). & \texttt{KJO\_\allowbreak Logging.h} \\
+\end{longtable}
+\endgroup
+
+%═══════════════════════════════════════════════════════════════════════════════
 \section{Version History}
 %═══════════════════════════════════════════════════════════════════════════════
 \begin{center}
@@ -633,6 +843,10 @@ Version & Date & Notes \\
                    and opens Ox (instead of closing all valves); Button~A reassigned to
                    hold-to-open the Ox valve; \texttt{dump\_pct} removed from
                    \texttt{Heartbeat\_Response\_Packet}. \\
+0.8 & September 2026 & Add new §10 Parameters \& Flags reference section: tunable timing,
+                   threshold, and calibration constants across the valve, pressure,
+                   engine-start, indicator, burn-recording, radio, and CAN subsystems,
+                   with source-file attribution for each. \\
 \bottomrule
 \end{tabularx}
 \end{center}

@@ -1,7 +1,7 @@
-\documentclass[11pt,letterpaper]{article}
+﻿\documentclass[11pt,letterpaper]{article}
 \input{../shared/KJO_preamble}
-\newcommand{\docversion}{0.3}
-\newcommand{\docdate}{March 2026}
+\newcommand{\docversion}{0.5}
+\newcommand{\docdate}{September 2026}
 \lhead{\textsc{KJO Remote Control Unit}}
 \rhead{\textsc{RCU Reference} --- v\docversion}
 \cfoot{\thepage\ of \pageref{LastPage}}
@@ -292,6 +292,101 @@ in human-readable form, e.g.:
 \end{lstlisting}
 
 %═══════════════════════════════════════════════════════════════════════════════
+\section{Parameters \& Flags}
+%═══════════════════════════════════════════════════════════════════════════════
+
+This section collects the tunable operational parameters and feature flags
+compiled into this firmware image, together with the source file where each
+is defined. It is meant as a single reference point when tracing or changing
+a timing, threshold, or calibration value. Pin/channel wiring assignments,
+LoRa command opcodes, and packet byte layouts are documented separately (the
+Hardware Overview pin map and the Command Reference sections above) and are
+not repeated here. Parameters marked \emph{(shared)} are defined in
+\sw{KJO\_\allowbreak Shared\_\allowbreak Libraries} and must agree with the same constant used on
+the other board(s) that consume it.
+
+\subsubsection*{Radio Communication}
+
+\begingroup
+\footnotesize
+\begin{longtable}{@{}p{3.2cm}p{2.4cm}p{6.2cm}p{2.6cm}@{}}
+\toprule
+Parameter & Value & Description & Source File \\
+\midrule
+\texttt{RCS\_\allowbreak CENTER\_\allowbreak FREQUENCY} & 917.117~MHz & LoRa carrier frequency; must match on both RCU and EMU radios to communicate. & \texttt{KJO\_\allowbreak Radio.h} (shared) \\
+\texttt{TRANSMIT\_\allowbreak POWER} & 5~dBm & RFM95 transmit power (PA\_\allowbreak BOOST pin), valid range 5--23~dBm. & \texttt{KJO\_\allowbreak Radio.h} (shared) \\
+\texttt{LINK\_\allowbreak MARGINAL\_\allowbreak THRESHOLD} & $-$90~dBm & RSSI floor below which the link status indicator shows MARGINAL (yellow) instead of OK (green). & \texttt{KJO\_\allowbreak Radio.h} (shared) \\
+\texttt{MAX\_\allowbreak PAYLOAD\_\allowbreak LENGTH} & 64~bytes & Size of the LoRa TX/RX payload buffer; sized with headroom above the largest packet (\texttt{Extended\_\allowbreak Heartbeat\_\allowbreak Response\_\allowbreak Packet}, 39 bytes). & \texttt{KJO\_\allowbreak Command\_\allowbreak Defs.h} (shared) \\
+\texttt{heartbeat\_\allowbreak interval} & 5000~ms & Interval at which a HEARTBEAT command is sent to the EMU when no other traffic has occurred, to keep the radio link alive. & \texttt{main.cpp} \\
+\texttt{LOS\_\allowbreak timeout\_\allowbreak interval} & 30000~ms & Time since last received packet after which the link is declared LOST (LINK\_\allowbreak DOWN) and RSSI/status reset. & \texttt{main.cpp} \\
+\texttt{FILL\_\allowbreak CMD\_\allowbreak RETRY\_\allowbreak DELAY\_\allowbreak MS} & 250~ms & Delay before firing the single automatic \cmd{BEGIN\_\allowbreak FILL}/\cmd{STOP\_\allowbreak FILL} retry after EMU responds \texttt{RELAY\_\allowbreak BUSY}. & \texttt{main.cpp} \\
+\end{longtable}
+\endgroup
+
+\subsubsection*{GUI / Display Timing}
+
+\begingroup
+\footnotesize
+\begin{longtable}{@{}p{3.2cm}p{2.4cm}p{6.2cm}p{2.6cm}@{}}
+\toprule
+Parameter & Value & Description & Source File \\
+\midrule
+\texttt{volt\_\allowbreak RSSI\_\allowbreak update\_\allowbreak interval} & 1000~ms & Refresh interval for the battery voltage, link status, time, and temperature display fields. & \texttt{main.cpp} \\
+\texttt{show\_\allowbreak button\_\allowbreak duration} & 1000~ms & How long a momentary button stays highlighted (pressed color) before reverting, for non-latching buttons. & \texttt{main.cpp} \\
+\end{longtable}
+\endgroup
+
+\subsubsection*{Fill Progress Polling}
+
+\begingroup
+\footnotesize
+\begin{longtable}{@{}p{3.2cm}p{2.4cm}p{6.2cm}p{2.6cm}@{}}
+\toprule
+Parameter & Value & Description & Source File \\
+\midrule
+\texttt{FILL\_\allowbreak PROGRESS\_\allowbreak STATUS\_\allowbreak INTERVAL} & 1500~ms & Poll interval for \cmd{QUERY\_\allowbreak FILL\_\allowbreak PROGRESS} while a fill session is active, driving the Fill button color and popup progress bar. & \texttt{main.cpp} \\
+\texttt{PRESSURE\_\allowbreak STATUS\_\allowbreak INTERVAL} & 2000~ms & Poll interval for \cmd{READ\_\allowbreak TANK\_\allowbreak PRESSURE} while a fill is active or the pressure warning is active. & \texttt{main.cpp} \\
+\end{longtable}
+\endgroup
+
+\subsubsection*{Pressure Monitoring}
+
+\begingroup
+\footnotesize
+\begin{longtable}{@{}p{3.2cm}p{2.4cm}p{6.2cm}p{2.6cm}@{}}
+\toprule
+Parameter & Value & Description & Source File \\
+\midrule
+\texttt{PRESSURE\_\allowbreak IN\_\allowbreak SYSTEM\_\allowbreak THRESHOLD} & 10~PSI & Tank pressure above which the RCU displays the ``system pressurized'' warning (valve panel turns red). & \texttt{KJO\_\allowbreak RCU\_\allowbreak Display.h} (shared) \\
+\end{longtable}
+\endgroup
+
+\subsubsection*{SD Logging}
+
+\begingroup
+\footnotesize
+\begin{longtable}{@{}p{3.2cm}p{2.4cm}p{6.2cm}p{2.6cm}@{}}
+\toprule
+Parameter & Value & Description & Source File \\
+\midrule
+\texttt{LOG\_\allowbreak FILE\_\allowbreak NAME\_\allowbreak BASE} & \texttt{"Log\_\allowbreak "} & Base filename prefix for SD-card log files; combined with an auto-incrementing index (\texttt{Log\_\allowbreak 0.txt}, \texttt{Log\_\allowbreak 1.txt}, \ldots) to find the next unused file at boot. & \texttt{main.cpp} \\
+\end{longtable}
+\endgroup
+
+\subsubsection*{Battery Voltage Calibration (RCU Local ADC)}
+
+\begingroup
+\footnotesize
+\begin{longtable}{@{}p{3.2cm}p{2.4cm}p{6.2cm}p{2.6cm}@{}}
+\toprule
+Parameter & Value & Description & Source File \\
+\midrule
+\texttt{RCU\_\allowbreak Batt\_\allowbreak Info.AD\_\allowbreak res} & 12~bits & ADC resolution used when sampling the RCU's own battery voltage divider on pin A7. & \texttt{main.cpp} \\
+\texttt{RCU\_\allowbreak Batt\_\allowbreak Info.AD\_\allowbreak samples} & 4 & Number of ADC samples averaged per RCU battery voltage reading (noise reduction). & \texttt{main.cpp} \\
+\end{longtable}
+\endgroup
+
+%═══════════════════════════════════════════════════════════════════════════════
 \section{Version History}
 %═══════════════════════════════════════════════════════════════════════════════
 \begin{center}
@@ -312,6 +407,10 @@ Version & Date & Notes \\
                    retained (still a latching toggle) but now open/close the Ox valve instead of
                    a dedicated Dump valve; the separate Dump valve status indicator was removed
                    and its state folded into the Ox indicator. \\
+0.5 & September 2026 & Add new §8 Parameters \& Flags reference section: tunable timing,
+                   threshold, and calibration constants across the radio, GUI, fill-progress
+                   polling, and pressure-monitoring subsystems, with source-file attribution
+                   for each. \\
 \bottomrule
 \end{tabularx}
 \end{center}
