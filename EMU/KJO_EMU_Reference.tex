@@ -1,6 +1,6 @@
 ﻿\documentclass[11pt,letterpaper]{article}
 \input{../shared/KJO_preamble}
-\newcommand{\docversion}{0.9}
+\newcommand{\docversion}{1.0}
 \newcommand{\docdate}{September 2026}
 \lhead{\textsc{KJO Engine Management Unit}}
 \rhead{\textsc{EMU Reference} --- v\docversion}
@@ -37,10 +37,11 @@ Microcontroller   & Adafruit Feather M0 (ATSAMD21G18A, 48~MHz)  & ---     & \\
 OLED Display      & SH1107, 128$\times$64, 1.12\textquotedbl      & I\textsuperscript{2}C & \\
 GPIO Expander     & MCP23X17 (16 I/O)                            & I\textsuperscript{2}C & Relays, buttons, AUX\_IO \\
 PWM Servo Wing    & Adafruit 8-channel wing (PCA9685)            & I\textsuperscript{2}C & Ox, Fuel servos \\
-ADC               & ADS1015 (12-bit, 4-ch)                       & I\textsuperscript{2}C & Ch0: unassigned; Ch1: chamber pressure; Ch2: tank pressure; Ch3: battery voltage \\
+ADC               & ADS1015 (12-bit, 4-ch)                       & I\textsuperscript{2}C & Ch0: Airstart/LCO ignition sense; Ch1: chamber pressure; Ch2: tank pressure; Ch3: battery voltage \\
 Thermocouple IF   & MAX31856 (2$\times$)                         & SPI     & TC1, TC2 \\
 Real-Time Clock   & PCF8523                                      & I\textsuperscript{2}C & \\
 LoRa Radio        & HopeRF RFM95W (Semtech SX1276), 915~MHz      & SPI     & \\
+CAN Controller    & MCP2515 (Adafruit CAN FeatherWing)           & SPI     & Link to GSEMU/LCMU \\
 SD Card           & Standard SPI SD socket                       & SPI     & \\
 NeoPixel          & WS2812B 4$\times$8 array                     & GPIO    & Status indicator \\
 Igniter Relay     & SPDT relay via MCP23X17                      & GPIO    & \\
@@ -89,6 +90,7 @@ Pin Name & Direction & Function \\
   \node[hwblock, right=2.3cm of mcu, yshift= 2.0cm, minimum width=3.0cm] (rf)  {RFM95W LoRa};
   \node[hwblock, right=2.3cm of mcu, yshift= 0.8cm, minimum width=3.0cm] (tc1) {MAX31856 TC×2};
   \node[hwblock, right=2.3cm of mcu, yshift=-0.4cm, minimum width=3.0cm] (sd)  {SD Card};
+  \node[hwblock, right=2.3cm of mcu, yshift=-1.6cm, minimum width=3.0cm] (can) {MCP2515\\CAN FeatherWing};
   % GPIO below
   \node[hwblock, below=1.5cm of mcu, xshift=-1.8cm, minimum width=2.8cm] (neo) {NeoPixel 4×8};
   \node[hwblock, below=1.5cm of mcu, xshift= 1.8cm, minimum width=2.8cm] (buz) {Buzzer};
@@ -99,7 +101,7 @@ Pin Name & Direction & Function \\
     \draw[bidbusline] (mcu.west |- \nd) -- (\nd.east)
       node[midway,above,font=\tiny]{I\textsuperscript{2}C};
   % SPI bus (right)
-  \foreach \nd in {rf,tc1,sd}
+  \foreach \nd in {rf,tc1,sd,can}
     \draw[bidbusline] (mcu.east |- \nd) -- (\nd.west)
       node[midway,above,font=\tiny]{SPI};
   % GPIO
@@ -119,7 +121,7 @@ Pin Name & Direction & Function \\
 \subsection{Module Summary}
 
 \begin{center}
-\begin{tabular}{@{}lll@{}}
+\begin{tabularx}{\textwidth}{@{}llY@{}}
 \toprule
 Module & Location & Responsibility \\
 \midrule
@@ -128,48 +130,74 @@ Module & Location & Responsibility \\
 \sw{KJO\_QR\_Master}       & local  & Umbilical connection-sense reader (see §6) \\
 \sw{KJO\_Control\_System}  & local  & \sw{Execute\_Command()} routing table \\
 \sw{KJO\_Pressure}         & local  & Pressure transducer read / convert \\
-\sw{KJO\_Temperature}      & local  & Analog temperature transducer \\
-\sw{KJO\_Thermocouple}     & local  & MAX31856 thermocouple read \\
-\sw{KJO\_Analog}           & local  & ADS1015 ADC wrapper \\
+\sw{KJO\_Thermocouple}     & local  & MAX31856 thermocouple read (TC1/TC2 -- all temperature sensing on this board) \\
+\sw{KJO\_Analog}           & local  & ADS1015 ADC wrapper, Airstart/LCO channel \\
 \sw{KJO\_GPIO}             & local  & MCP23X17 pin definitions, Relay class \\
-\sw{KJO\_EMU\_Display}     & local  & SH1107 OLED display functions \\
+\sw{KJO\_EMU\_Display}     & local  & SD log-file finder (\sw{Find\_Available\_File()}) only -- OLED display moved to shared \sw{KJO\_Status\_Display} \\
 \sw{KJO\_Indicator}        & local  & NeoPixel status indicator (solid, timed, flash) \\
 \sw{KJO\_Logging}          & local  & SD log file constants \\
+\sw{KJO\_Units}            & local  & Unit conversion helpers (\sw{C\_To\_F()}) \\
+\sw{KJO\_Burn\_Buffer}     & local (\texttt{lib/}) & Pre/post-trigger RAM ring buffer for burn data capture \\
 \sw{KJO\_Radio}            & shared & Radio pin constants, frequency \\
-\sw{KJO\_Command\_Defs}    & shared & Command codes, packet structures \\
+\sw{KJO\_Command\_Defs}    & shared & LoRa command codes, packet structures \\
+\sw{KJO\_CAN\_Command\_Defs} & shared & CAN command codes, packet structures, node IDs \\
+\sw{KJO\_CAN\_Client}      & shared & CAN transport (send/poll/request-with-timeout) \\
 \sw{KJO\_System\_Config}   & shared & Version, platform constants \\
+\sw{KJO\_Status} / \sw{KJO\_Status\_Display} & shared & Tagged Serial/SD logging (\sw{Log\_Message()}) and scrolling OLED status (\sw{Report\_Status()}) \\
 \bottomrule
-\end{tabular}
+\end{tabularx}
 \end{center}
 
 \subsection{Main Loop Control Flow}
 
 \begin{figure}[H]
 \centering
-\begin{tikzpicture}[node distance=0.55cm]
+\resizebox{!}{0.92\textheight}{%
+\begin{tikzpicture}[node distance=0.28cm]
   \node[flowterminal] (start)  {loop()};
   \node[flowproc, below=of start]  (rel)  {Service relay timers\\(Igniter\_Relay, Buzzer)};
   \node[flowproc, below=of rel]    (ind)  {Indicator.update()};
   \node[flowproc, below=of ind]    (btn)  {Check\_Buttons()};
   \node[flowproc, below=of btn]    (vchk) {Check\_Valve\_Move()};
-  \node[flowproc, below=of vchk]   (eng)  {Check\_Engine\_Start()};
-  \node[flowproc, below=of eng]    (rmt)  {Check\_Remote\_Start()};
-  \node[flowproc, below=of rmt]    (prec) {Check\_Pressure\_Recording()};
-  \node[flowproc, below=of prec]   (iab)  {Check\_Indicator\_And\_Buzzer()};
-  \node[flowproc, below=of iab]    (rx)   {Check\_Radio()};
+  \node[flowproc, below=of vchk]   (bcan) {Check\_Boot\_CAN\_Sequence()};
+  \node[flowproc, below=of bcan]   (pping)  {Check\_Presence\_Ping()};
+  \node[flowproc, below=of pping]  (fpoll)  {Check\_Fill\_Poll()};
+  \node[flowproc, below=of fpoll]  (eng)  {Check\_Engine\_Start()};
+  \node[flowproc, below=of eng]    (abrt) {Check\_Abort\_Sequence()};
+  \node[flowproc, below=of abrt]   (air)  {Check\_Airstart\_Input()};
+  \node[flowproc, below=of air]    (qrcs) {Check\_QR\_Connection\_Status()};
+  \node[flowproc, below=of qrcs]   (pwarn) {Check\_Pressure\_Warning()};
+  \node[flowproc, below=of pwarn]  (oxover) {Check\_Ox\_Tank\_Overpressure()};
+  \node[flowproc, below=of oxover] (prec) {Check\_Pressure\_Recording()};
+  \node[flowproc, below=of prec]   (burn) {Check\_Burn\_Recording()};
+  \node[flowproc, below=of burn]   (los)  {Check\_Link\_LOS()};
+  \node[flowproc, below=of los]    (iab)  {Check\_Indicator\_And\_Buzzer()};
+  \node[flowproc, below=of iab]    (rx)   {Check\_Comms()};
+  \node[flowproc, below=of rx]     (can)  {Check\_CAN()};
   \draw[flowarrow] (start)--(rel);
   \draw[flowarrow] (rel)--(ind);
   \draw[flowarrow] (ind)--(btn);
   \draw[flowarrow] (btn)--(vchk);
-  \draw[flowarrow] (vchk)--(eng);
-  \draw[flowarrow] (eng)--(rmt);
-  \draw[flowarrow] (rmt)--(prec);
-  \draw[flowarrow] (prec)--(iab);
+  \draw[flowarrow] (vchk)--(bcan);
+  \draw[flowarrow] (bcan)--(pping);
+  \draw[flowarrow] (pping)--(fpoll);
+  \draw[flowarrow] (fpoll)--(eng);
+  \draw[flowarrow] (eng)--(abrt);
+  \draw[flowarrow] (abrt)--(air);
+  \draw[flowarrow] (air)--(qrcs);
+  \draw[flowarrow] (qrcs)--(pwarn);
+  \draw[flowarrow] (pwarn)--(oxover);
+  \draw[flowarrow] (oxover)--(prec);
+  \draw[flowarrow] (prec)--(burn);
+  \draw[flowarrow] (burn)--(los);
+  \draw[flowarrow] (los)--(iab);
   \draw[flowarrow] (iab)--(rx);
-  \draw[flowarrow] (rx.south) -- ++(0,-0.4) -- ++(4.0,0)
-    -- ++(0,10.5) -- (start.east);
-\end{tikzpicture}
-\caption{EMU main loop control flow.}
+  \draw[flowarrow] (rx)--(can);
+  \draw[flowarrow] (can.south) -- ++(0,-0.4) -- ++(4.5,0)
+    -- ++(0,22.0) -- (start.east);
+\end{tikzpicture}%
+}
+\caption{EMU main loop control flow. \sw{ADC\_Diagnostic\_Print()} (bench-only, compiled out by default) runs after \sw{Check\_CAN()} when \texttt{ADC\_DIAGNOSTIC\_MODE} is defined -- omitted above.}
 \end{figure}
 
 %═══════════════════════════════════════════════════════════════════════════════
@@ -192,7 +220,7 @@ The \sw{Valve} class encapsulates a servo-driven, potentiometer-feedback valve:
 
 \subsection{EMU State Machine}
 
-The EMU operates as a top-level state machine with three states:
+The EMU operates as a top-level state machine with five states:
 
 \begin{figure}[H]
 \centering
@@ -200,6 +228,8 @@ The EMU operates as a top-level state machine with three states:
   \node[statenode] (idle)     {VALVE\\IDLE};
   \node[statenode, right=of idle]  (moving)   {VALVE\\MOVING};
   \node[statenode, below=2.5cm of idle] (starting) {ENGINE\\STARTING};
+  \node[statenode, right=of starting] (aborting) {ABORTING};
+  \node[statenode, below=2.5cm of aborting] (latched) {ABORT\\LATCHED};
 
   % IDLE → MOVING
   \draw[statetransition, bend left=15]
@@ -215,16 +245,28 @@ The EMU operates as a top-level state machine with three states:
     (moving);
   % IDLE → ENGINE_STARTING
   \draw[statetransition, bend right=10]
-    (idle) edge node[left, font=\tiny, align=center]{START\_ENGINE\\or LCO button}
+    (idle) edge node[left, font=\tiny, align=center]{START\_ENGINE\\or LCO/Airstart}
     (starting);
   % ENGINE_STARTING → IDLE
   \draw[statetransition, bend right=10]
-    (starting) edge node[right, font=\tiny, align=center]{seq complete\\or RESET}
+    (starting) edge node[right, font=\tiny, align=center]{seq complete}
     (idle);
+  % any state -> ABORTING
+  \draw[statetransition]
+    (starting) edge node[above, font=\tiny, align=center]{RESET (any state)}
+    (aborting);
+  % ABORTING -> ABORT_LATCHED
+  \draw[statetransition]
+    (aborting) edge node[right, font=\tiny, align=center]{tank vented\\below threshold}
+    (latched);
 \end{tikzpicture}
-\caption{EMU top-level state machine.  HEARTBEAT and RESET are processed in any
-         state.  All other commands are dropped during VALVE\_MOVING or
-         ENGINE\_STARTING.}
+\caption{EMU top-level state machine.  HEARTBEAT is processed in any
+         state; RESET is processed in any state except \texttt{ABORT\_LATCHED}
+         and transitions to \texttt{ABORTING} (see §3.4 Abort Sequence).
+         All other commands are dropped while \texttt{VALVE\_MOVING},
+         \texttt{ENGINE\_STARTING}, \texttt{ABORTING}, or
+         \texttt{ABORT\_LATCHED}. \texttt{ABORT\_LATCHED} is terminal --
+         there is no software path back to \texttt{VALVE\_IDLE}.}
 \end{figure}
 
 \subsection{Engine Start Sequence (10 Steps)}
@@ -264,6 +306,50 @@ separation timeout). A stuck/stalled Fuel or Ox valve at steps 6 or 8
 propellant may already be flowing by that point.
 \cmd{RESET} cancels the sequence at any step.
 
+\subsection{Abort Sequence}
+
+\cmd{RESET} (or a link-loss abort in \texttt{EMU\_TEST\_MODE} -- see
+\sw{Check\_Link\_LOS()}) calls \sw{Execute\_Abort()}, which performs
+several actions immediately -- de-energizes the igniter, stops any
+in-progress start/valve-move sequence, clears ignition-source arming,
+silences the buzzer alarm -- \textbf{but deliberately leaves sensor
+recording running} (it stops on its own once pressure settles). It then
+arms a 7-step sequenced valve/vent procedure, advanced non-blockingly by
+\sw{Check\_Abort\_Sequence()} every \sw{loop()} while \texttt{emu\_state}
+is \texttt{ABORTING}:
+
+\begin{center}
+\begin{tabular}{@{}clp{8.5cm}@{}}
+\toprule
+Step & Trigger & Action \\
+\midrule
+0 & immediate     & If GSEMU is CAN-reachable, close the Fill valve; otherwise skip to step 2 \\
+1 & timer / CAN ack & Wait for the Fill valve close to confirm; proceed regardless of outcome \\
+2 & step 0/1 pass & Close the Fuel valve; start a confirm timeout \\
+3 & timer or stopped & Wait for the Fuel valve to stop moving; proceed regardless of outcome \\
+4 & step 3 pass   & Open the Ox valve (dump); start a confirm timeout \\
+5 & timer or stopped & Wait for the Ox valve to stop moving; proceed regardless of outcome \\
+6 & step 5 pass   & Wait (no timeout) for tank gauge pressure to drop below \texttt{ABORT\_VENTED\_THRESHOLD\_PSI}; once vented, latch \texttt{emu\_state = ABORT\_LATCHED} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Steps 0--5 each proceed on their own timeout even if a confirmation never
+arrives -- venting the flight-side propellants must never stall on a lost
+CAN ack or a valve that fails to confirm. Step 6 has no timeout: a stuck
+pressure sensor or a genuine slow leak both mean the system is not yet
+safe, and there is no further fallback to proceed to.
+\texttt{ABORT\_LATCHED} is terminal -- \sw{Execute\_Abort()} itself
+refuses re-entry once latched, and there is no software path back to
+\texttt{VALVE\_IDLE}.
+
+A separate, unconditional safety poll (\sw{Check\_Ox\_Tank\_Overpressure()},
+every \sw{loop()} regardless of state) calls \sw{Execute\_Abort()}
+automatically if Ox tank pressure stays at or above
+\texttt{MAX\_OX\_TANK\_PRESSURE} for \texttt{OX\_TANK\_PRESSURE\_TIME\_MS}
+(see §10 Parameters \& Flags) -- an abort does not require an explicit
+\cmd{RESET} command.
+
 \subsection{Servo Mechanical Geometry and Calibration}
 
 \subsubsection*{Gear Train and Servo Travel}
@@ -298,11 +384,13 @@ actually used.
 
 \subsubsection*{Empirical Calibration (March 2026)}
 
-Bench testing showed the theoretical 1690-count span caused all four valves to
-travel noticeably \emph{more} than 90\textdegree.  All three valves were
-re-calibrated.  The empirical open-to-close deltas average $\approx$1610~counts
-($\sim$5\% below theoretical), consistent with the servo being slightly more
-sensitive in the operating band than the linear model predicts.
+Bench testing showed the theoretical 1690-count span caused both of EMU's
+valves (Ox and Fuel -- the Fill valve is GSEMU's actuator, not EMU's; see
+its own reference doc for its calibration) to travel noticeably \emph{more}
+than 90\textdegree.  Both were re-calibrated.  The empirical open-to-close
+deltas average $\approx$1645~counts ($\sim$3\% below theoretical),
+consistent with the servo being slightly more sensitive in the operating
+band than the linear model predicts.
 
 \begin{center}
 \begin{tabular}{@{}lrrrrrrrr@{}}
@@ -311,7 +399,6 @@ Valve & \multicolumn{4}{c}{Servo PWM (12-bit counts)} & \multicolumn{3}{c}{Pot A
 \cmidrule(lr){2-5}\cmidrule(lr){6-8}
  & Open & Close & $\Delta$ & Implied travel & Open & Closed & $\Delta$ \\
 \midrule
-Fill     & 2179 & 3719 & 1540 & $\sim$82.1\textdegree & 1238 & 2984 & 1746 \\
 Oxidizer & 2050 & 3690 & 1640 & $\sim$87.4\textdegree & 1139 & 2857 & 1718 \\
 Fuel     & 2130 & 3780 & 1650 & $\sim$87.9\textdegree & 1170 & 2918 & 1748 \\
 \bottomrule
@@ -379,55 +466,84 @@ valve entirely over CAN.
 \section{Command Dispatch}
 %═══════════════════════════════════════════════════════════════════════════════
 
-\sw{Check\_Radio()} receives packets from the RCU and routes them.
+\sw{Check\_Comms()} receives packets from the RCU and routes them.
 Commands are processed in priority order:
 
+\begin{sloppypar}
 \begin{enumerate}[nosep]
   \item \cmd{HEARTBEAT} — always processed; returns
         \texttt{Heartbeat\_Response\_Packet} with EMU voltage and
-        all three valve positions.
-  \item \cmd{RESET} — always processed regardless of state;
-        calls \sw{Execute\_Abort()}.
-  \item All other commands are \emph{dropped} if \texttt{emu\_state}
-        is VALVE\_MOVING or ENGINE\_STARTING.
+        the Ox/Fuel valve positions (\texttt{fill\_pct} is hardcoded 0 --
+        Fill state is polled via CAN/\cmd{READ\_VALVE\_POSITION}, not
+        heartbeat).
+  \item \cmd{RESET} — always processed except in \texttt{ABORT\_LATCHED};
+        calls \sw{Execute\_Abort()} (see §3.4 Abort Sequence).
+  \item All other commands are \emph{dropped} if \texttt{emu\_state} is
+        \texttt{VALVE\_MOVING}, \texttt{ENGINE\_STARTING},
+        \texttt{ABORTING}, or \texttt{ABORT\_LATCHED}.
   \item Per-command interceptors (deferred valve moves, start sequence,
-        recording).
+        recording, CAN relays to GSEMU/LCMU).
   \item All remaining commands dispatched to \sw{Execute\_Command()}.
 \end{enumerate}
+\end{sloppypar}
 
 \subsection{Command Table}
 
-\begin{center}
-\begin{tabular}{@{}lp{8.5cm}@{}}
+\begin{sloppypar}
+Codes 1--35 are production commands; codes 36--39 exist only for
+RCU\_UNIT\_TEST, a separate bench-test harness firmware with an expanded
+command set for exercising individual actuators directly -- production
+RCU never sends them.
+\end{sloppypar}
+
+\begingroup
+\footnotesize
+\begin{longtable}{@{}rlp{8.2cm}@{}}
 \toprule
-Command & EMU Action \\
+Code & Command & EMU Action \\
 \midrule
-\cmd{HEARTBEAT}               & Respond with EMU voltage and all three valve positions \\
-\cmd{RESET}                   & Execute\_Abort(): Fill/Fuel close, Ox opens (dump), igniter off, buzzer off, recording off, indicator off \\
-\cmd{BEGIN\_FILL}             & Open Fill valve (CAN to GSEMU); start continuous pressure recording \\
-\cmd{STOP\_FILL}              & Close Fill valve; recording continues until ambient \\
-\cmd{DUMP}                    & Open Ox valve to vent pressurant through the chamber (deferred; sends response when complete; no dedicated Dump valve) \\
-\cmd{STOP\_DUMP}              & Close Ox valve (deferred) \\
-\cmd{OPEN\_OXIDIZER\_FEED}    & Open Ox valve (deferred) \\
-\cmd{CLOSE\_OXIDIZER\_FEED}   & Close Ox valve (deferred) \\
-\cmd{OPEN\_FUEL\_FEED}        & Open Fuel valve (deferred) \\
-\cmd{CLOSE\_FUEL\_FEED}       & Close Fuel valve (deferred) \\
-\cmd{START\_ENGINE\_FLOWS}    & Close Fill; open Ox + Fuel simultaneously (deferred dual-valve) \\
-\cmd{STOP\_ENGINE\_FLOWS}     & Close Ox + Fuel simultaneously (deferred dual-valve) \\
-\cmd{START\_ENGINE}           & Arm 10-step ignition sequence (response sent asynchronously) \\
-\cmd{ENABLE\_LCO\_CONTROL}    & param $\neq$ 0: assert LAUNCH\_ENABLE\_EIO LOW, set \sw{lco\_enabled};
-                                param = 0: deassert HIGH, clear \sw{lco\_enabled} \\
-\cmd{START\_PRESSURE\_RECORDING} & Activate continuous sensor recording \\
-\cmd{STOP\_PRESSURE\_RECORDING}  & Deactivate continuous sensor recording \\
-\cmd{READ\_VALVE\_POSITION}   & Return current position (\%) of the valve specified in \texttt{param} \\
-\cmd{READ\_TANK\_PRESSURE}    & Return tank pressure (PSI) \\
-\cmd{READ\_CHAMBER\_PRESSURE} & Return chamber pressure (PSI) \\
-\cmd{READ\_TANK\_TEMP}        & Return tank temperature \\
-\cmd{READ\_CHAMBER\_TEMP}     & Return chamber temperature \\
-\cmd{QR\_RELEASE}             & Bench-test only: reversible timed release via \cmd{CAN\_QR\_TEST\_RELEASE} (GSEMU's local-override mechanism); production launch release happens automatically as Step 3 of the Engine Start sequence via \cmd{CAN\_QR\_RELEASE} \\
+1 & \cmd{BEGIN\_FILL} & Open Fill valve (CAN to GSEMU); start continuous pressure recording \\
+2 & \cmd{STOP\_FILL} & Close Fill valve; recording continues until ambient \\
+3 & \cmd{OPEN\_OXIDIZER\_FEED} & Open Ox valve (deferred) \\
+4 & \cmd{CLOSE\_OXIDIZER\_FEED} & Close Ox valve (deferred) \\
+5 & \cmd{OPEN\_FUEL\_FEED} & Open Fuel valve (deferred) \\
+6 & \cmd{CLOSE\_FUEL\_FEED} & Close Fuel valve (deferred) \\
+7 & \cmd{OXIDIZER\_FLOW\_PROP} & Dead: case exists in \sw{Execute\_Command()} but does nothing \\
+8 & \cmd{FUEL\_FLOW\_PROP} & Dead: case exists in \sw{Execute\_Command()} but does nothing \\
+9 & \cmd{DUMP} & Open Ox valve to vent pressurant through the chamber (deferred; sends response when complete; no dedicated Dump valve) \\
+10 & \cmd{START\_ENGINE\_FLOWS} & Close Fill; open Ox + Fuel simultaneously (deferred dual-valve) \\
+11 & \cmd{STOP\_ENGINE\_FLOWS} & Close Ox + Fuel simultaneously (deferred dual-valve) \\
+12 & \cmd{ARM\_LAUNCH} & Arms/disarms the currently-selected ignition source (\texttt{param} $\neq$ 0 = arm). Fails if arming with no source selected. If source is LCO, relays \cmd{CAN\_ARM\_LCO\_WATCH} to GSEMU (response deferred); RCU/Airstart sources arm/disarm immediately, purely locally. Renamed from \cmd{ENABLE\_LCO\_CONTROL} -- see §10 Version History \\
+13 & \cmd{START\_ENGINE} & Fails immediately unless armed for the RCU source; otherwise arms the 10-step ignition sequence (response sent asynchronously when it completes) \\
+14 & \cmd{RESET} & \sw{Execute\_Abort()}: igniter off, ignition disarmed, buzzer alarm silenced, recording left running; arms the 7-step sequenced Fill/Fuel-close, Ox-open, vent-and-latch procedure (see §3.4) \\
+15 & \cmd{READ\_TANK\_PRESSURE} & Return tank pressure (PSI) \\
+16 & \cmd{READ\_CHAMBER\_PRESSURE} & Return chamber pressure (PSI) \\
+17 & \cmd{READ\_TEMP2} & Return TC2 thermocouple temperature (formerly named \cmd{READ\_TANK\_TEMP}) \\
+18 & \cmd{READ\_TEMP1} & Return TC1 thermocouple temperature (formerly named \cmd{READ\_CHAMBER\_TEMP}) \\
+19 & \cmd{START\_PRESSURE\_RECORDING} & Activate continuous sensor recording \\
+20 & \cmd{STOP\_PRESSURE\_RECORDING} & Deactivate continuous sensor recording \\
+21 & \cmd{READ\_VALVE\_POSITION} & Return current position (\%) of the valve specified in \texttt{param} \\
+22 & \cmd{HEARTBEAT} & Respond with EMU voltage, Ox/Fuel positions, QR/GSEMU/LCMU reachability (\texttt{fill\_pct} always 0 -- see above) \\
+23 & \cmd{RCU\_STATUS} & Relay: query GSEMU health (\cmd{CAN\_GET\_HEALTH\_STATUS}) then LCMU health, always both, no short-circuit; response relayed back over LoRa \\
+24 & \cmd{STOP\_DUMP} & Close Ox valve (deferred) \\
+25 & \cmd{QR\_RELEASE} & Bench-test only: reversible timed release via \cmd{CAN\_QR\_TEST\_RELEASE} (GSEMU's local-override mechanism); production launch release happens automatically as Step 3 of the Engine Start sequence via \cmd{CAN\_QR\_RELEASE} \\
+26 & \cmd{QUERY\_FILL\_PROGRESS} & Answered locally from \sw{Check\_Fill\_Poll()}'s cached state (no CAN round-trip): fill state, current weight, clamped percent, and an estimated seconds-remaining (once enough time/weight has accrued to estimate a rate) \\
+27 & \cmd{TARE\_LCMU} & Relay to LCMU: \cmd{CAN\_TARE} \\
+28 & \cmd{GET\_LCMU\_BATTERY} & Relay to LCMU: \cmd{CAN\_GET\_BATTERY\_VOLTAGE} \\
+29 & \cmd{REPORT\_LCMU\_WEIGHT} & Relay to LCMU: \cmd{CAN\_REPORT\_CURRENT\_WEIGHT} \\
+30 & \cmd{BEGIN\_WEIGHT\_RECORDING} & Relay to LCMU: \cmd{CAN\_BEGIN\_WEIGHT\_RECORDING} \\
+31 & \cmd{STOP\_WEIGHT\_RECORDING} & Relay to LCMU: \cmd{CAN\_STOP\_WEIGHT\_RECORDING} \\
+32 & \cmd{BEGIN\_THRUST\_RECORDING} & Relay to LCMU: \cmd{CAN\_BEGIN\_THRUST\_RECORDING} \\
+33 & \cmd{STOP\_THRUST\_RECORDING} & Relay to LCMU: \cmd{CAN\_STOP\_THRUST\_RECORDING} \\
+34 & \cmd{SET\_IGNITION\_SOURCE} & Selects the active ignition source (\texttt{param}: 0=RCU, 1=LCO, 2=Airstart); rejected while armed \\
+35 & \cmd{ENGINE\_START\_ARMED} & EMU$\to$RCU, unprompted -- sent the instant any source arms the 10-step start sequence; \texttt{r\_val} = ignition source (same encoding as \cmd{SET\_IGNITION\_SOURCE}) \\
+36 & \cmd{FIRE\_IGNITER} & RCU\_UNIT\_TEST only: direct \sw{Igniter\_Relay.on()}, no sequence/interlock \\
+37 & \cmd{OPEN\_FILL\_VALVE} & RCU\_UNIT\_TEST only: direct Fill valve open, relayed as \cmd{CAN\_OPEN\_FILL\_VALVE}, bypassing the fill-target state machine entirely \\
+38 & \cmd{CLOSE\_FILL\_VALVE} & RCU\_UNIT\_TEST only: direct Fill valve close, relayed as \cmd{CAN\_CLOSE\_FILL\_VALVE} \\
+39 & \cmd{EXTENDED\_HEARTBEAT} & RCU\_UNIT\_TEST only: gathers GSEMU/LCMU sensor values over a multi-step CAN chain and returns \texttt{Extended\_Heartbeat\_Response\_Packet} instead of the normal heartbeat response \\
 \bottomrule
-\end{tabular}
-\end{center}
+\end{longtable}
+\endgroup
 
 %═══════════════════════════════════════════════════════════════════════════════
 \section{Umbilical Quick-Release (\sw{QR\_Master})}
@@ -489,21 +605,30 @@ red~$\to$ yellow~$\to$ green~$\to$ off as a pixel self-test.
 
 \sw{Check\_Indicator\_And\_Buzzer()} runs every loop iteration and updates the
 32-pixel NeoPixel array to reflect the highest-priority active condition.
-States are evaluated in descending priority:
+Ten internal states are evaluated in descending priority (only the
+indicator changes when the desired state changes from the previous tick):
 
 \begin{center}
-\begin{tabularx}{\textwidth}{@{}lYll@{}}
+\begin{tabularx}{\textwidth}{@{}lYp{2.7cm}l@{}}
 \toprule
 Priority & Condition & Pattern & Colour \\
 \midrule
-1 & \sw{engine\_running} = true      & Off (all pixels dark) & --- \\
-2 & \sw{emu\_state} = ENGINE\_STARTING & Solid                 & Red \\
-3 & \sw{tank\_pressurized} = true    & Flash 300/500~ms       & Red \\
-4 & \sw{link\_connected} = true      & Flash 300/1200~ms      & Green \\
-5 & (unlinked)                        & Flash 300/1200~ms      & Yellow \\
+1 & \texttt{emu\_state} = \texttt{ABORT\_LATCHED} & Alternate periodically$^{*}$ & Red / Yellow \\
+2 & \texttt{emu\_state} = \texttt{ABORTING} & Solid & Red \\
+3 & \sw{engine\_running} = true & Off (all pixels dark) & --- \\
+4 & \texttt{emu\_state} = \texttt{ENGINE\_STARTING}, pre-flow phase (steps 0--5), RCU/LCO source & Solid & Green \\
+5 & \texttt{emu\_state} = \texttt{ENGINE\_STARTING}, otherwise (Airstart source, or flow already started) & Off & --- \\
+6 & Fill session active and in progress & Solid & Blue \\
+7 & Fill session active and paused & Flash 250/750~ms & Blue \\
+8 & \sw{tank\_pressurized} = true & Flash 300/500~ms & Red \\
+9 & \sw{link\_connected} = true & Flash 225/4775~ms & Green \\
+10 & (unlinked) & Flash 225/4775~ms & Yellow \\
 \bottomrule
 \end{tabularx}
 \end{center}
+
+$^{*}$Alternation period is \texttt{ABORT\_LATCH\_COLOR\_INTERVAL\_MS} (see
+§10 Parameters \& Flags).
 
 \texttt{link\_connected} is set true on every received \cmd{HEARTBEAT} and
 cleared after 15~s of silence (loss-of-signal watchdog).
@@ -514,29 +639,27 @@ $>$\,\texttt{PRESSURE\_WARNING\_THRESHOLD} (15~PSI).
 \subsection{Buzzer Behaviour}
 
 \begin{center}
-\begin{tabular}{@{}lp{8.5cm}@{}}
+\begin{tabularx}{\textwidth}{@{}lY@{}}
 \toprule
 Condition & Buzzer Action \\
 \midrule
 Startup self-test            & 5 beeps (75~ms on, 75~ms gap) --- blocking, in \sw{setup()} \\
-Button press confirmation    & 1 or 2 short beeps (100~ms) via \sw{Beep()} \\
-Pressure alarm               & \textbf{Continuous tone} while tank\_pressurized = true \\
-Engine start / abort         & Alarm silenced immediately when \sw{Arm\_Engine\_Start()} or
-                               \sw{Execute\_Abort()} is called \\
-``I'm alive'' heartbeat      & Single 100~ms beep every 10~s; suppressed during alarm,
-                               ENGINE\_STARTING, and ENGINE\_RUNNING \\
+Button press confirmation    & 1 short beep via \sw{Beep()} (Button~A press) \\
+Pressure alarm                & \textbf{Continuous tone} while \texttt{tank\_pressurized} = true \\
+Engine start signal            & \textbf{Continuous tone} during the pre-flow phase of an RCU/LCO-sourced start (silenced automatically once propellant flow begins or the sequence ends) \\
+Abort in progress              & \textbf{Continuous tone} while \texttt{emu\_state} = \texttt{ABORTING}; silenced once vented and latched \\
+Fill beep                      & 100~ms timed beep every \texttt{FILL\_BEEP\_INTERVAL\_MS} while a fill session is active (filling or paused) \\
+``I'm alive'' heartbeat        & 100~ms timed beep every \texttt{ALIVE\_BEEP\_INTERVAL\_MS}; suppressed during the pressure alarm, filling/paused, the engine-start signal or silent phases, \texttt{ENGINE\_RUNNING}, \texttt{ABORTING}, and \texttt{ABORT\_LATCHED} \\
 \bottomrule
-\end{tabular}
+\end{tabularx}
 \end{center}
 
-The pressure alarm is managed entirely within \sw{Check\_Indicator\_And\_Buzzer()}.
-When the indicator state transitions \emph{to} \texttt{IND\_PRESSURIZED},
-\sw{Buzzer.on()} is called (no timeout — continuous).
-When the state transitions \emph{away} from \texttt{IND\_PRESSURIZED},
-\sw{Buzzer.off()} is called.
-\sw{Arm\_Engine\_Start()} and \sw{Execute\_Abort()} both call
-\sw{Buzzer.off()} directly and clear the \sw{pressure\_alarm\_active} flag
-so the next \sw{Check\_Indicator\_And\_Buzzer()} call does not re-arm it.
+The three continuous-tone conditions (pressure alarm, start signal, abort)
+each track their own \texttt{\_active} flag so that when one turns off the
+buzzer isn't stomped silent if another continuous-tone condition is still
+active on the same tick. \sw{Execute\_Abort()} silences the buzzer alarm
+immediately as part of its instant actions, independent of the sequenced
+abort/vent procedure that follows.
 
 \subsection{NeoPixel\_Indicator API}
 
@@ -567,12 +690,10 @@ Sensor & Class & ADC / Bus & Measurement \\
 Chamber pressure transducer& \sw{Pressure\_Transducer}   & ADS1015 ch1 & Combustion chamber pressure, 0--200~PSI \\
 Tank pressure transducer   & \sw{Pressure\_Transducer}   & ADS1015 ch2 & N\textsubscript{2}O tank pressure, 0--1000~PSI \\
 Battery voltage            & ---                         & ADS1015 ch3 & LiPo pack voltage (via resistor divider) \\
-Tank temperature sensor    & \sw{Temperature\_Transducer}& Onboard ADC (A0) & N\textsubscript{2}O tank temperature$^{\dagger}$ \\
-Chamber temperature sensor & \sw{Temperature\_Transducer}& Onboard ADC (A5) & Chamber wall temperature$^{\dagger}$ \\
-Thermocouple 1             & \sw{MAX31856}               & SPI         & TC1 (location TBD) \\
-Thermocouple 2             & \sw{MAX31856}               & SPI         & TC2 (location TBD) \\
+Airstart/LCO ignition sense & ---                        & ADS1015 ch0 & Ignition-enable signal (see §10 Parameters \& Flags, \texttt{LCO\_SENSE\_*}) \\
+Thermocouple 1 (TC1)       & \sw{MAX31856}               & SPI         & Read by \cmd{READ\_TEMP1} (location TBD) -- all temperature sensing on this board; there is no separate onboard-ADC temperature path \\
+Thermocouple 2 (TC2)       & \sw{MAX31856}               & SPI         & Read by \cmd{READ\_TEMP2} (location TBD) \\
 \bottomrule
-\multicolumn{4}{@{}l}{\small $^{\dagger}$Onboard ADC channel assignments are placeholders pending hardware schematic confirmation.} \\
 \end{tabularx}
 \end{center}
 
@@ -618,14 +739,43 @@ Constant & Value & Meaning \\
 \subsection{Continuous Pressure Recording}
 
 Continuous recording is started automatically by \cmd{BEGIN\_FILL} and may
-also be started manually with \cmd{START\_PRESSURE\_RECORDING}.
-Every \texttt{PRESSURE\_RECORDING\_INTERVAL\_MS} (250~ms) the EMU reads
-tank pressure, chamber pressure, tank temperature, and chamber temperature
-and appends all four values to the SD log.
+also be started manually with \cmd{START\_PRESSURE\_RECORDING}. Every
+\texttt{PRESSURE\_RECORDING\_INTERVAL\_MS} (250~ms) -- unless a burn
+recording (below) currently owns the data file -- the EMU logs one row
+with: elapsed time, battery voltage, tank and chamber pressure (PSI),
+both thermocouple readings (\textdegree F), Ox/Fuel valve position (\%),
+QR separation state, and igniter on/off.
 
-Recording auto-stops when the tank pressure remains below
-\texttt{PRESSURE\_AMBIENT\_THRESHOLD} (10~PSI) for four consecutive readings,
-or when \cmd{STOP\_PRESSURE\_RECORDING} or \cmd{RESET} is received.
+\begin{sloppypar}
+Recording auto-stops when tank pressure remains at or below
+\texttt{PRESSURE\_WARNING\_THRESHOLD} (15~PSI) for
+\texttt{PRESSURE\_AMBIENT\_COUNT} (4) consecutive readings, or when
+\cmd{STOP\_PRESSURE\_RECORDING} is received. \cmd{RESET} does \emph{not}
+stop it -- recording deliberately continues through an abort (see §3.4)
+and stops on its own once pressure settles.
+\end{sloppypar}
+
+\subsection{Burn Data Recording}
+
+A separate, higher-rate capture mechanism records propellant flow/burn
+events to their own \texttt{PT\_N.txt} file, independent of the continuous
+pressure log above. \sw{Arm\_Engine\_Start()} arms it automatically at
+the start of every engine start sequence; \sw{Execute\_Abort()} stops and
+writes out whatever was captured so far.
+
+\begin{sloppypar}
+While armed, \sw{Check\_Burn\_Recording()} (every \sw{loop()}) samples
+both tared pressures and both thermocouples at \texttt{BURN\_SAMPLE\_INTERVAL\_MS}
+(100~ms, 10~Hz) into a \sw{Burn\_Buffer} ring buffer holding
+\texttt{BURN\_PRE\_TRIGGER\_MS} of history before the trigger and up to
+\texttt{BURN\_POST\_TRIGGER\_DURATION\_MS} after it. The trigger fires once
+chamber pressure has stayed \texttt{BURN\_TRIGGER\_DELTA\_PSI} above tared
+ambient for \texttt{BURN\_TRIGGER\_SUSTAIN\_MS}; if it never fires, a
+\texttt{BURN\_NEVER\_TRIGGERED\_TIMEOUT\_MS} safety net completes the
+recording anyway (see §10 Parameters \& Flags for all five values). Once
+complete, the full pre/post-trigger buffer is written to SD in one burst
+and the file is closed.
+\end{sloppypar}
 
 %═══════════════════════════════════════════════════════════════════════════════
 \section{SD Logging}
@@ -645,7 +795,7 @@ compiled into this firmware image, together with the source file where each
 is defined. It is meant as a single reference point when tracing or changing
 a timing, threshold, or calibration value. Pin/channel wiring assignments,
 LoRa/CAN command opcodes, and packet byte layouts are documented separately
-(the Hardware Overview pin map and the Command Set sections above) and are
+(the Hardware Overview pin map and the Command Dispatch/Command Table, §5, above) and are
 not repeated here. Parameters marked \emph{(shared)} are defined in
 \sw{KJO\_\allowbreak Shared\_\allowbreak Libraries} and must agree with the same constant used on
 the other board(s) that consume it.
@@ -849,8 +999,7 @@ Parameter & Value & Description & Source File \\
 %═══════════════════════════════════════════════════════════════════════════════
 \section{Version History}
 %═══════════════════════════════════════════════════════════════════════════════
-\begin{center}
-\begin{tabularx}{\textwidth}{@{}llY@{}}
+\begin{longtable}{@{}p{1.4cm}p{2.2cm}p{11.5cm}@{}}
 \toprule
 Version & Date & Notes \\
 \midrule
@@ -897,8 +1046,26 @@ Version & Date & Notes \\
                    Functions documenting all three front-panel buttons (only Button~A
                    is still functional); corrected two stale Command Table rows
                    (\cmd{BEGIN\_FILL}, \cmd{QR\_RELEASE}). \\
+1.0 & September 2026 & Comprehensive doc-vs-code audit: added the missing
+                   \texttt{ABORTING}/\texttt{ABORT\_LATCHED} states and a new \S3.4 Abort
+                   Sequence (5 states/7 steps were entirely undocumented); rewrote \S3.3 from
+                   the stale 7-step, igniter-first ordering to the actual 10-step sequence;
+                   rebuilt the Command Table from 22 to all 39 defined commands, fixing the
+                   nonexistent \cmd{ENABLE\_LCO\_CONTROL} row (renamed \cmd{ARM\_LAUNCH}),
+                   stale \cmd{READ\_TANK\_TEMP}/\cmd{READ\_CHAMBER\_TEMP} names, and the
+                   \cmd{HEARTBEAT} row's fill-position claim; rebuilt \S2.2 Main Loop Control
+                   Flow from 9 boxes (two -- \sw{Check\_Remote\_Start()},
+                   \sw{Check\_Radio()} -- naming nonexistent functions) to the actual 20-step
+                   \sw{loop()}; rebuilt \S7.2/\S7.3's indicator/buzzer tables from 5 to 10
+                   states, fixing a wrong color and wrong flash timings; removed two fictional
+                   \sw{Temperature\_Transducer} sensor rows and a nonexistent \sw{KJO\_Temperature}
+                   module (all temperature sensing is via the two thermocouples); removed a
+                   Fill-valve calibration row for a valve that isn't on this board; added the
+                   MCP2515 CAN controller to the Hardware Overview (previously omitted
+                   entirely); corrected the ADC channel~0 assignment; expanded the Module
+                   Summary; documented the previously-unmentioned Burn Data Recording
+                   subsystem (new \S8.3). \\
 \bottomrule
-\end{tabularx}
-\end{center}
+\end{longtable}
 
 \end{document}
