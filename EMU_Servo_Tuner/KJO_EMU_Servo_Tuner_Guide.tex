@@ -1,0 +1,147 @@
+\documentclass[11pt,letterpaper]{article}
+\input{../shared/KJO_preamble}
+\newcommand{\docversion}{0.1}
+\newcommand{\docdate}{September 2026}
+\lhead{\textsc{KJO EMU Servo Tuner}}
+\rhead{\textsc{User Guide} --- v\docversion}
+\cfoot{\thepage\ of \pageref{LastPage}}
+\hypersetup{pdftitle={KJO EMU Servo Tuner User Guide}, pdfauthor={Ken Overton}}
+
+\begin{document}
+\input{../shared/KJO_tikz_styles}
+
+\KJOtitlepage%
+  {EMU Servo Tuner}%
+  {Bench Tool User Guide}%
+  {\docversion}{\docdate}%
+  {A Serial-console tool, flashed onto the actual EMU hardware, for
+   interactively tuning the PWM open/close and potentiometer open/close
+   limits of each of EMU's ball valves.}
+
+\tableofcontents\newpage
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{Purpose}
+%═══════════════════════════════════════════════════════════════════════════════
+
+EMU Servo Tuner is a standalone sketch, built and flashed onto the same
+physical EMU hardware (Feather M0 + Servo FeatherWing) as production
+firmware, that lets an operator select one of a small built-in list of
+valves and interactively tune its PWM/encoder limits over Serial -- the
+same target/adjust workflow as the standalone \textbf{Servo Tuner}, but
+driven by a per-valve table instead of one hardcoded channel/pin pair.
+
+\begin{warningbox}
+The valve table built into this tool (§\ref{sec:valve-table}) is a
+snapshot taken when the tool was written -- it is \textbf{not}
+automatically kept in sync with EMU's production \texttt{KJO\_Valve.h}.
+Treat the printed limits as a starting point only, and always verify
+against the current production reference doc (\textit{KJO EMU
+Reference}) before trusting a number from this tool's menu. In
+particular, this tool's built-in list still includes a \texttt{FILL}
+entry; production EMU has no Fill valve of its own (it lives on GSEMU) --
+the entry's numbers actually match GSEMU's Fill valve calibration, not an
+EMU valve.
+\end{warningbox}
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{Hardware Required}
+%═══════════════════════════════════════════════════════════════════════════════
+
+\begin{itemize}[nosep]
+  \item EMU hardware: Adafruit Feather M0 + PWM/Servo FeatherWing (PCA9685)
+  \item The valve(s) to be tuned, wired to their normal EMU pin/channel
+        assignments
+  \item USB cable for Serial (115200 baud)
+\end{itemize}
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{Built-In Valve Table}
+\label{sec:valve-table}
+%═══════════════════════════════════════════════════════════════════════════════
+
+\begin{center}
+\begin{tabularx}{\textwidth}{@{}lllllY@{}}
+\toprule
+Valve & Servo ch. & PWM open & PWM close & Pot pin & Encoder open/closed \\
+\midrule
+FILL      & 4 & 2329 & 3918 & A4 & 1310 / 3004 \\
+OX FEED   & 5 & 2050 & 3865 & A3 & 1146 / 2846 \\
+FUEL FEED & 6 & 2280 & 3950 & A1 & 1217 / 2887 \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+These are the limits displayed when a valve is selected -- they are the
+tool's own starting reference, not necessarily what is currently flashed
+to production EMU.
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{How to Use}
+%═══════════════════════════════════════════════════════════════════════════════
+
+Open a Serial monitor at 115200 baud after powering the board.
+
+\subsection{Outer Loop -- Valve Selection}
+
+\begin{enumerate}[nosep]
+  \item The tool prints a numbered menu of the valves in
+        §\ref{sec:valve-table}. Enter the number and press Enter.
+  \item It prints that valve's servo channel, pot pin, and current
+        PWM/encoder open-close limits.
+\end{enumerate}
+
+\subsection{Inner Loop -- Target / Adjust}
+
+Identical workflow to the standalone Servo Tuner, using the selected
+valve's own channel and pot pin:
+
+\begin{sloppypar}
+\begin{enumerate}[nosep]
+  \item \textbf{Target}: enter a PWM count (the valve's own open/close
+        values are printed as a range hint).
+  \item \textbf{Hysteresis delta}: enter a count value; the tool
+        approaches the target from \texttt{target~+~delta} counts away
+        to remove backlash from the reading.
+  \item The servo moves and the resulting potentiometer reading is
+        printed.
+  \item \textbf{Action prompt} -- type one letter and press Enter:
+        \begin{itemize}[nosep]
+          \item \texttt{a} (adjust): enter a signed delta; the tool moves
+                away from the \emph{previous} target by the hysteresis
+                amount, then to the new target, and prints the new pot
+                reading.
+          \item \texttt{c} (continue): return to step 1 for a fresh
+                target on the \emph{same} valve.
+          \item \texttt{f} (finished): return to the outer valve-selection
+                menu.
+        \end{itemize}
+\end{enumerate}
+\end{sloppypar}
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{Notes}
+%═══════════════════════════════════════════════════════════════════════════════
+
+\begin{itemize}[nosep]
+  \item The Serial console has no timeout -- the tool waits indefinitely
+        at every prompt.
+  \item Backspace is supported while typing a value.
+  \item An unrecognised action-prompt letter simply re-prints the prompt;
+        it does not exit or lose the current target.
+\end{itemize}
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{Version History}
+%═══════════════════════════════════════════════════════════════════════════════
+\begin{center}
+\begin{tabularx}{\textwidth}{@{}llY@{}}
+\toprule
+Version & Date & Notes \\
+\midrule
+0.1 & September 2026 & Initial user guide. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\end{document}

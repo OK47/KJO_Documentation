@@ -1,0 +1,137 @@
+\documentclass[11pt,letterpaper]{article}
+\input{../shared/KJO_preamble}
+\newcommand{\docversion}{0.1}
+\newcommand{\docdate}{September 2026}
+\lhead{\textsc{KJO Servo Tuner}}
+\rhead{\textsc{User Guide} --- v\docversion}
+\cfoot{\thepage\ of \pageref{LastPage}}
+\hypersetup{pdftitle={KJO Servo Tuner User Guide}, pdfauthor={Ken Overton}}
+
+\begin{document}
+\input{../shared/KJO_tikz_styles}
+
+\KJOtitlepage%
+  {Servo Tuner}%
+  {Bench Tool User Guide}%
+  {\docversion}{\docdate}%
+  {A standalone bench tool for finding the PWM open/close endpoints of a
+   servo-actuated ball valve, using a Serial console to move the servo and
+   read back its position potentiometer.}
+
+\tableofcontents\newpage
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{Purpose}
+%═══════════════════════════════════════════════════════════════════════════════
+
+\begin{sloppypar}
+Servo Tuner is a small standalone sketch used on the bench to determine the
+correct \texttt{PWM\_OPEN}/\texttt{PWM\_CLOSE} calibration constants for a
+single servo-actuated ball valve, before those values are hardcoded into
+production firmware (EMU, GSEMU). It drives one servo channel and reads one
+position potentiometer, letting the operator move to a candidate PWM count,
+read the resulting pot value, and iteratively nudge the target until the
+valve sits exactly at its mechanical open or closed stop.
+\end{sloppypar}
+
+This is a different program from the \textbf{EMU Servo Tuner} (a related but
+separate tool that tunes all three of EMU's installed valves against its
+actual per-valve pin/channel table -- see that tool's own guide).
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{Hardware Required}
+%═══════════════════════════════════════════════════════════════════════════════
+
+\begin{itemize}[nosep]
+  \item Adafruit Feather M0 (ATSAMD21G18A)
+  \item Adafruit 8-channel PWM/Servo FeatherWing (PCA9685), I\textsuperscript{2}C
+  \item One servo-actuated ball valve, servo wired to \textbf{PCA9685 channel 7}
+  \item The valve's position potentiometer wired to \textbf{analog pin A1}
+  \item USB cable for Serial (115200 baud)
+\end{itemize}
+
+\begin{notebox}
+The servo channel (7) and pot pin (A1) are hardcoded in the sketch, not
+configurable at runtime. To tune a valve wired to different pins, edit
+\texttt{servo\_channel}/\texttt{pot\_channel} in \texttt{main.cpp} and
+reflash.
+\end{notebox}
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{How to Use}
+%═══════════════════════════════════════════════════════════════════════════════
+
+Open a Serial monitor at 115200 baud after powering the board. The tool
+runs an outer ``new target'' loop and an inner ``adjust'' loop:
+
+\begin{enumerate}[nosep]
+  \item \textbf{Target}: the tool prints a suggested PWM range (see
+        §\ref{sec:suggested-range}) and prompts for a target PWM count.
+        Enter a number and press Enter.
+  \item \textbf{Hysteresis delta}: enter a count value. Every subsequent
+        move first drives the servo \texttt{target~+~delta} counts past
+        the target, then back to the target itself -- this removes
+        mechanical backlash from the reading, so the pot value reflects
+        the valve consistently approaching from one direction.
+  \item The servo moves to the target and the tool prints the resulting
+        potentiometer reading (\texttt{Encoder = ...}).
+  \item \textbf{Action prompt} -- type one letter and press Enter:
+        \begin{itemize}[nosep]
+          \item \texttt{a} (adjust): enter a signed delta (e.g.\ \texttt{+20}
+                or \texttt{-15}); the tool adds it to the current target,
+                re-approaches through the hysteresis move, and prints the
+                new pot reading.
+          \item any other key: returns to step 1 for a completely fresh
+                target and hysteresis delta.
+        \end{itemize}
+\end{enumerate}
+
+Repeat the adjust step, watching the printed pot value, until it matches
+the valve's known fully-open or fully-closed pot reading -- the PWM count
+at that point is the calibration value to hardcode into production
+firmware.
+
+\subsection{Suggested Target Range}
+\label{sec:suggested-range}
+
+The range printed at each ``New Target'' prompt is computed at compile
+time from a generic 5-turn-servo, 60:16-gear, 90\textdegree-travel ball
+valve (the same geometry used across the production valves) -- it is a
+starting-point hint, not a hard limit, since PWM counts still need
+individual per-valve trimming on the bench:
+
+\[
+\text{start} \approx 2329 \qquad \text{end} \approx 3918
+\]
+
+These numbers come from the servo's 1100~Hz PWM frequency, its 500--2500~$\mu$s
+mechanical range, the 60:16 gear ratio, and 90\textdegree\ of required valve
+travel -- see \texttt{main.cpp}'s \texttt{constexpr} derivation if you need
+to recompute them for a different gear ratio or travel angle.
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{Notes}
+%═══════════════════════════════════════════════════════════════════════════════
+
+\begin{itemize}[nosep]
+  \item The Serial console has no timeout -- the tool waits indefinitely
+        at every prompt.
+  \item Backspace is supported while typing a value.
+  \item There is no ``undo'' -- if a bad target damages the mechanism,
+        power-cycle and re-enter values carefully.
+\end{itemize}
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{Version History}
+%═══════════════════════════════════════════════════════════════════════════════
+\begin{center}
+\begin{tabularx}{\textwidth}{@{}llY@{}}
+\toprule
+Version & Date & Notes \\
+\midrule
+0.1 & September 2026 & Initial user guide. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\end{document}

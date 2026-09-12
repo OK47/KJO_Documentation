@@ -1,0 +1,144 @@
+\documentclass[11pt,letterpaper]{article}
+\input{../shared/KJO_preamble}
+\newcommand{\docversion}{0.1}
+\newcommand{\docdate}{September 2026}
+\lhead{\textsc{KJO LCMU Cal Data Capture}}
+\rhead{\textsc{User Guide} --- v\docversion}
+\cfoot{\thepage\ of \pageref{LastPage}}
+\hypersetup{pdftitle={KJO LCMU Cal Data Capture User Guide}, pdfauthor={Ken Overton}}
+
+\begin{document}
+\input{../shared/KJO_tikz_styles}
+
+\KJOtitlepage%
+  {LCMU Cal Data Capture}%
+  {Bench Tool User Guide}%
+  {\docversion}{\docdate}%
+  {Standalone bench-test firmware, flashed onto LCMU's physical hardware,
+   that logs raw readings from all three load cells to the SD card on a
+   button press, for deriving a platform-level weight calibration curve.}
+
+\tableofcontents\newpage
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{Purpose}
+%═══════════════════════════════════════════════════════════════════════════════
+
+This tool captures one reading from each of LCMU's three load cells to a
+CSV-style file on the SD card every time Button~C is pressed, timestamped
+from the real-time clock. It is meant for bench calibration work: apply a
+known reference weight to the platform, press Button~C to log the raw
+per-cell readings (and their sum), repeat at several reference weights,
+then fit a calibration curve from the logged data offline.
+
+It runs on the same physical LCMU hardware as production firmware, but is
+a completely separate, standalone build -- \textbf{no CAN}; it never
+communicates with EMU or GSEMU.
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{Hardware Required}
+%═══════════════════════════════════════════════════════════════════════════════
+
+\begin{itemize}[nosep]
+  \item LCMU hardware: Adafruit Feather RP2040 Adalogger, SH1107 OLED,
+        DS3231 RTC, PCA9548 I\textsuperscript{2}C mux, 3$\times$NAU7802
+        load-cell ADCs, onboard microSD
+  \item All three load cells connected and seated on the platform
+  \item Button~C wired (direct GPIO on this board -- no I\textsuperscript{2}C
+        expander, unlike EMU's equivalent tool)
+\end{itemize}
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{How to Use}
+%═══════════════════════════════════════════════════════════════════════════════
+
+\begin{enumerate}[nosep]
+  \item Power on the board. The OLED shows boot status for each subsystem
+        (OLED, RTC, SD card, load cells) as it initializes.
+  \item On successful SD init, a fresh data file is created
+        (\texttt{Cal\_N.txt}, auto-incremented -- see §\ref{sec:output}) and
+        its name is shown on the OLED, along with the active NAU7802
+        gain/sample-rate/excitation configuration recorded into the file's
+        header.
+  \item Apply a known reference weight to the platform and allow the
+        reading to settle.
+  \item Press \textbf{Button~C}. The tool reads all three cells' most
+        recently completed background-averaged sample and appends one row
+        to the data file; the OLED shows the running sample count
+        (\texttt{"sample N"}).
+  \item Repeat steps 3--4 at as many reference weights as needed for a
+        good calibration curve.
+  \item Remove the SD card (or copy the file off) and fit the calibration
+        curve offline.
+\end{enumerate}
+
+\begin{notebox}
+Each capture reads whichever 9-sample background-averaged batch the load
+cells' own continuous scan most recently completed -- it does not trigger
+a fresh, separately-averaged read. This means the calibration is derived
+against the exact same read path production weight/thrust recording
+uses, not a different noise profile.
+\end{notebox}
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{Output File Format}
+\label{sec:output}
+%═══════════════════════════════════════════════════════════════════════════════
+
+Files are named \texttt{Cal\_N.txt} (N auto-incremented from 0 each power-up,
+never overwriting an existing file) in the SD card root. Each file begins
+with four header lines, then one data row per Button~C press:
+
+\begin{minipage}{\textwidth}
+\begin{lstlisting}[language={},numbers=none]
+09/09/2026
+NAU7802 Gain: 128
+NAU7802 Sample Rate (SPS): 320
+Excitation Voltage (V): 3.0
+Samples Averaged per Reading: 9
+Time, Cell1 Raw, Cell2 Raw, Cell3 Raw, Sum Raw, Health
+09/09/2026 10:15:03.142, 41230, 40988, 41502, 123720, OK
+\end{lstlisting}
+\end{minipage}
+
+\begin{itemize}[nosep]
+  \item \textbf{Time} -- full \texttt{MM/DD/YYYY HH:MM:SS.mmm} timestamp
+        from the RTC.
+  \item \textbf{Cell1/2/3 Raw} -- raw NAU7802 counts, tare-adjusted, for
+        each of the three cells.
+  \item \textbf{Sum Raw} -- the three raw values added together (the
+        quantity a combined-weight calibration curve is fit against).
+  \item \textbf{Health} -- \texttt{OK} if all three cells responded;
+        \texttt{DEGRADED} if one or more did not (treat that row's data
+        with caution).
+\end{itemize}
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{Notes}
+%═══════════════════════════════════════════════════════════════════════════════
+
+\begin{itemize}[nosep]
+  \item If the RTC failed to initialize, each row's timestamp is a raw
+        \texttt{millis()} count instead of wall-clock time.
+  \item A failed SD write is reported on the OLED (\texttt{"write
+        FAILED."}) rather than silently losing the sample -- retake it if
+        this happens.
+  \item Status/boot messages are shown on the OLED only; they are
+        \emph{not} written to the data file (the file exists solely to
+        hold calibration rows).
+\end{itemize}
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{Version History}
+%═══════════════════════════════════════════════════════════════════════════════
+\begin{center}
+\begin{tabularx}{\textwidth}{@{}llY@{}}
+\toprule
+Version & Date & Notes \\
+\midrule
+0.1 & September 2026 & Initial user guide. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\end{document}

@@ -1,0 +1,104 @@
+\documentclass[11pt,letterpaper]{article}
+\input{../shared/KJO_preamble}
+\newcommand{\docversion}{0.1}
+\newcommand{\docdate}{September 2026}
+\lhead{\textsc{KJO Valve Cycler}}
+\rhead{\textsc{User Guide} --- v\docversion}
+\cfoot{\thepage\ of \pageref{LastPage}}
+\hypersetup{pdftitle={KJO Valve Cycler User Guide}, pdfauthor={Ken Overton}}
+
+\begin{document}
+\input{../shared/KJO_tikz_styles}
+
+\KJOtitlepage%
+  {Valve Cycler}%
+  {Bench Tool User Guide}%
+  {\docversion}{\docdate}%
+  {A standalone bench tool that repeatedly cycles a single servo-actuated
+   valve between two PWM endpoints, for mechanical endurance/wear testing
+   and for exercising a valve during bench assembly work.}
+
+\tableofcontents\newpage
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{Purpose}
+%═══════════════════════════════════════════════════════════════════════════════
+
+Valve Cycler drives one servo-actuated valve back and forth between two
+operator-supplied PWM counts (``Upper'' and ``Lower''), with a configurable
+pause between moves, either a fixed number of times or indefinitely. It is
+used for mechanical endurance testing, seating a newly-assembled valve, or
+simply exercising a valve on the bench without needing the full production
+firmware running.
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{Hardware Required}
+%═══════════════════════════════════════════════════════════════════════════════
+
+\begin{itemize}[nosep]
+  \item Adafruit Feather M0 (ATSAMD21G18A)
+  \item Adafruit 8-channel PWM/Servo FeatherWing (PCA9685), I\textsuperscript{2}C
+  \item One servo-actuated valve, servo wired to \textbf{PCA9685 channel 7}
+  \item USB cable for Serial (115200 baud)
+\end{itemize}
+
+\begin{notebox}
+The servo channel (7) is hardcoded in the sketch. To cycle a valve wired to
+a different channel, edit \texttt{SERVO\_CHANNEL} in \texttt{main.cpp} and
+reflash.
+\end{notebox}
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{How to Use}
+%═══════════════════════════════════════════════════════════════════════════════
+
+Open a Serial monitor at 115200 baud after powering the board. On every
+power-up (and again after a run completes) the tool asks four questions,
+each with a \texttt{y/n} confirmation before moving to the next:
+
+\begin{enumerate}[nosep]
+  \item \textbf{Upper} -- the maximum PWM count (one travel endpoint).
+  \item \textbf{Lower} -- the minimum PWM count (the other travel endpoint).
+  \item \textbf{Delay D} -- seconds to hold at each endpoint before moving
+        to the other.
+  \item \textbf{Number of cycles} -- how many Lower$\to$Upper$\to$Lower
+        round trips to run, or \textbf{$-1$} for indefinite cycling.
+\end{enumerate}
+
+If you answer \texttt{n} to any confirmation, the tool re-asks that same
+question. Once all four are confirmed, cycling starts immediately: the
+servo moves to Lower, waits \texttt{D} seconds, moves to Upper, waits
+\texttt{D} seconds, and repeats. A finite run prints \texttt{"N cycles
+completed."} and returns to the setup questions for another run; an
+indefinite run (\texttt{$-1$}) never stops on its own -- power-cycle the
+board to end it.
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{Notes}
+%═══════════════════════════════════════════════════════════════════════════════
+
+\begin{itemize}[nosep]
+  \item The Serial console has no timeout -- the tool waits indefinitely
+        at every prompt.
+  \item Backspace is supported while typing a value.
+  \item Upper and Lower are used exactly as entered -- the tool does not
+        check that Upper is actually greater than Lower, or that either
+        value is within the servo's safe travel range. Use the companion
+        \textbf{Servo Tuner} bench tool first to find safe endpoints for a
+        given valve.
+\end{itemize}
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{Version History}
+%═══════════════════════════════════════════════════════════════════════════════
+\begin{center}
+\begin{tabularx}{\textwidth}{@{}llY@{}}
+\toprule
+Version & Date & Notes \\
+\midrule
+0.1 & September 2026 & Initial user guide. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\end{document}

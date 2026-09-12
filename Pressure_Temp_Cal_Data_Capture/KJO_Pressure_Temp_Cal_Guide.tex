@@ -1,0 +1,137 @@
+\documentclass[11pt,letterpaper]{article}
+\input{../shared/KJO_preamble}
+\newcommand{\docversion}{0.1}
+\newcommand{\docdate}{September 2026}
+\lhead{\textsc{KJO Pressure/Temp Cal Data Capture}}
+\rhead{\textsc{User Guide} --- v\docversion}
+\cfoot{\thepage\ of \pageref{LastPage}}
+\hypersetup{pdftitle={KJO Pressure/Temp Cal Data Capture User Guide}, pdfauthor={Ken Overton}}
+
+\begin{document}
+\input{../shared/KJO_tikz_styles}
+
+\KJOtitlepage%
+  {Pressure/Temp Cal Data Capture}%
+  {Bench Tool User Guide}%
+  {\docversion}{\docdate}%
+  {Standalone bench-test firmware, flashed onto EMU's physical hardware,
+   that logs raw chamber/tank pressure and thermocouple readings to the SD
+   card on a button press, for deriving pressure and temperature
+   calibration curves.}
+
+\tableofcontents\newpage
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{Purpose}
+%═══════════════════════════════════════════════════════════════════════════════
+
+This tool captures a single averaged reading of chamber pressure, tank
+pressure, and both thermocouples to a CSV-style file on the SD card every
+time Button~C is pressed, timestamped from the real-time clock. It is
+meant for bench calibration work: apply a known reference pressure or
+temperature, press Button~C to log the corresponding raw sensor reading,
+repeat at several reference points, then fit a calibration curve (slope
+and intercept) from the logged data offline.
+
+It runs on the same physical EMU hardware as production firmware, but is
+a completely separate, standalone build -- \textbf{no LoRa, no CAN}; it
+never communicates with RCU, GSEMU, or LCMU.
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{Hardware Required}
+%═══════════════════════════════════════════════════════════════════════════════
+
+\begin{itemize}[nosep]
+  \item EMU hardware: Adafruit Feather M0, SH1107 OLED, MCP23X17 GPIO
+        expander (Button~C only), ADS1015 external ADC, two MAX31856
+        thermocouple amplifiers, PCF8523 RTC, SD card
+  \item Both chamber and tank pressure transducers connected to the
+        ADS1015 (channels 1 and 2 respectively)
+  \item Both thermocouples connected (TC1 = chamber, TC2 = tank)
+\end{itemize}
+
+\begin{notebox}
+This build shares EMU's physical SPI bus with the (unused, in this
+firmware) LoRa radio module. \texttt{RFM95\_CS} is deliberately held HIGH
+before \texttt{SD.begin()} in \texttt{setup()} to avoid bus contention --
+no operator action is needed for this, it's automatic.
+\end{notebox}
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{How to Use}
+%═══════════════════════════════════════════════════════════════════════════════
+
+\begin{enumerate}[nosep]
+  \item Power on the board. The OLED shows boot status for each subsystem
+        (OLED, thermocouples, GPIO expander, ADC, RTC, SD card) as it
+        initializes.
+  \item On successful SD init, a fresh data file is created
+        (\texttt{Cal\_N.txt}, auto-incremented -- see §\ref{sec:output}) and
+        its name is shown on the OLED.
+  \item Apply a known reference pressure and/or temperature to the
+        sensor(s) under test.
+  \item Press \textbf{Button~C}. The tool averages 10 samples from each of
+        the four channels and appends one row to the data file; the OLED
+        shows the running sample count (\texttt{"sample N"}).
+  \item Repeat steps 3--4 at as many reference points as needed for a
+        good calibration curve.
+  \item Remove the SD card (or copy the file off) and fit the calibration
+        curve offline.
+\end{enumerate}
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{Output File Format}
+\label{sec:output}
+%═══════════════════════════════════════════════════════════════════════════════
+
+Files are named \texttt{Cal\_N.txt} (N auto-incremented from 0 each power-up,
+never overwriting an existing file) in the SD card root. Each file begins
+with two header lines, then one data row per Button~C press:
+
+\begin{lstlisting}[language={},numbers=none]
+09/09/2026
+Time, Chamber P, Tank P, Temp 1, Temp 2
+10:15:03.142, 812.40, 3021.75, 71.32, 68.90
+\end{lstlisting}
+
+\begin{itemize}[nosep]
+  \item \textbf{Time} -- \texttt{HH:MM:SS.mmm} from the RTC (date is
+        recorded once, in the file's first line, not repeated per row).
+  \item \textbf{Chamber P / Tank P} -- \textbf{raw ADS1015 counts}
+        (10-sample average), \emph{not} PSI. The factory PSI conversion is
+        intentionally bypassed here -- raw counts are what a calibration
+        curve is fit against.
+  \item \textbf{Temp 1 / Temp 2} -- thermocouple readings in
+        \textdegree F (10-sample average).
+\end{itemize}
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{Notes}
+%═══════════════════════════════════════════════════════════════════════════════
+
+\begin{itemize}[nosep]
+  \item If the RTC failed to initialize, the file's date header reads
+        ``RTC not available'' and each row's time is a raw
+        \texttt{millis()} count instead of wall-clock time.
+  \item A failed SD write is reported on the OLED (\texttt{"write
+        FAILED."}) rather than silently losing the sample -- retake it if
+        this happens.
+  \item Status/boot messages are shown on the OLED only; they are
+        \emph{not} written to the data file (the file exists solely to
+        hold calibration rows).
+\end{itemize}
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{Version History}
+%═══════════════════════════════════════════════════════════════════════════════
+\begin{center}
+\begin{tabularx}{\textwidth}{@{}llY@{}}
+\toprule
+Version & Date & Notes \\
+\midrule
+0.1 & September 2026 & Initial user guide. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\end{document}
