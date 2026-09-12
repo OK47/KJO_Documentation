@@ -1,6 +1,6 @@
 ﻿\documentclass[11pt,letterpaper]{article}
 \input{../shared/KJO_preamble}
-\newcommand{\docversion}{0.6}
+\newcommand{\docversion}{0.7}
 \newcommand{\docdate}{September 2026}
 \lhead{\textsc{KJO GSE Management Unit}}
 \rhead{\textsc{GSEMU Reference} --- v\docversion}
@@ -35,10 +35,12 @@ Component & Part & Interface & Notes \\
 Microcontroller & Adafruit Feather M0 (ATSAMD21G18A, 48~MHz)   & ---     & \\
 OLED Display    & SH1107, 128$\times$64, 1.12\textquotedbl       & I\textsuperscript{2}C & \\
 GPIO Expander   & MCP23X17 (16 I/O)                             & I\textsuperscript{2}C & Buttons, AUX\_IO \\
-PWM Servo Wing  & Adafruit 8-channel wing (PCA9685)             & I\textsuperscript{2}C & Fill valve servo \\
+PWM Servo Wing  & Adafruit 8-channel wing (PCA9685)             & I\textsuperscript{2}C & Fill valve servo (ch.~6) and QR release servo (ch.~5) \\
+ADC             & ADS1015 (12-bit, 4-ch)                       & I\textsuperscript{2}C & Battery voltage, AUX/LCO sense \\
+CAN Controller  & MCP2515 (Adafruit CAN FeatherWing)            & SPI     & Link to EMU/LCMU \\
 Real-Time Clock & PCF8523                                       & I\textsuperscript{2}C & \\
 SD Card         & Standard SPI SD socket                        & SPI     & \\
-Battery         & 3.7~V LiPo                                    & ---     & \\
+Battery         & 2S LiPo (7.4~V nominal)                       & ---     & Read via ADS1015, resistor-divider sense \\
 \bottomrule
 \end{tabularx}
 \end{center}
@@ -67,33 +69,39 @@ Button C (fill open)   & IN  & Locally command Fill valve open \\
 
 \begin{figure}[H]
 \centering
+\resizebox{\textwidth}{!}{%
 \begin{tikzpicture}[node distance=0.9cm and 1.8cm]
   \node[mcublock, minimum width=3.0cm, minimum height=1.1cm] (mcu)
     {Feather M0\\(ATSAMD21G18A)};
   % I2C left
-  \node[hwblock, left=2.3cm of mcu, yshift= 2.4cm, minimum width=3.2cm] (oled) {SH1107 OLED};
-  \node[hwblock, left=2.3cm of mcu, yshift= 1.2cm, minimum width=3.2cm] (gpio) {MCP23X17\\GPIO Exp.};
-  \node[hwblock, left=2.3cm of mcu, yshift= 0.0cm, minimum width=3.2cm] (pwm)  {PCA9685\\Servo Wing};
-  \node[hwblock, left=2.3cm of mcu, yshift=-1.2cm, minimum width=3.2cm] (rtc)  {PCF8523 RTC};
+  \node[hwblock, left=3.6cm of mcu, yshift= 2.4cm, minimum width=3.2cm] (oled) {SH1107 OLED};
+  \node[hwblock, left=3.6cm of mcu, yshift= 1.2cm, minimum width=3.2cm] (gpio) {MCP23X17\\GPIO Exp.};
+  \node[hwblock, left=3.6cm of mcu, yshift= 0.0cm, minimum width=3.2cm] (pwm)  {PCA9685\\Servo Wing};
+  \node[hwblock, left=3.6cm of mcu, yshift=-1.2cm, minimum width=3.2cm] (adc)  {ADS1015 ADC};
+  \node[hwblock, left=3.6cm of mcu, yshift=-2.4cm, minimum width=3.2cm] (rtc)  {PCF8523 RTC};
+  % Buttons -- adjacent to the GPIO expander (its output), clear of the
+  % mcu/left-column bus lines and the mcu/battery power line below.
+  \node[hwblock, left=1.0cm of gpio, minimum width=2.4cm] (btn) {Panel\\Buttons};
   % SPI right
   \node[hwblock, right=2.3cm of mcu, yshift=0.6cm, minimum width=3.0cm] (sd)   {SD Card};
-  % GPIO expander outputs
-  \node[hwblock, below=1.5cm of mcu, minimum width=2.6cm] (btn) {Panel Buttons};
-  % Power
-  \node[powerblock, below=3.0cm of mcu, minimum width=3.0cm] (bat) {LiPo Battery};
+  \node[hwblock, right=2.3cm of mcu, yshift=-0.6cm, minimum width=3.0cm] (can)  {MCP2515\\CAN FeatherWing};
+  % Power -- straight down from mcu; nothing else occupies this column.
+  \node[powerblock, below=3.0cm of mcu, minimum width=3.0cm] (bat) {2S LiPo Battery};
   % I2C bus
-  \foreach \nd in {oled,gpio,pwm,rtc}
+  \foreach \nd in {oled,gpio,pwm,adc,rtc}
     \draw[bidbusline] (mcu.west |- \nd) -- (\nd.east)
       node[midway,above,font=\tiny]{I\textsuperscript{2}C};
   % SPI
-  \draw[bidbusline] (mcu.east |- sd) -- (sd.west)
-    node[midway,above,font=\tiny]{SPI};
-  % GPIO expander → buttons
-  \draw[busline] (gpio.south) -- ++(0,-0.4) -| (btn.north);
-  % Power
-  \draw[busline,draw=KJOorange] (bat.north) -- ++(0,0.6) -| (mcu.south)
-    node[near end,right,font=\tiny]{3.7V};
-\end{tikzpicture}
+  \foreach \nd in {sd,can}
+    \draw[bidbusline] (mcu.east |- \nd) -- (\nd.west)
+      node[midway,above,font=\tiny]{SPI};
+  % GPIO expander → buttons (simple adjacency, no crossing)
+  \draw[busline] (gpio.west) -- (btn.east);
+  % Power -- straight vertical, clear of every other node.
+  \draw[busline,draw=KJOorange] (bat.north) -- (mcu.south)
+    node[midway,right,font=\tiny]{7.4V};
+\end{tikzpicture}%
+}
 \caption{GSEMU hardware block diagram.}
 \end{figure}
 
@@ -108,14 +116,20 @@ Button C (fill open)   & IN  & Locally command Fill valve open \\
 \toprule
 Module & Location & Responsibility \\
 \midrule
-\sw{main.cpp}            & local  & Setup, loop, button handling \\
-\sw{KJO\_Valve}          & local  & Base valve: servo drive, pot feedback (Fill valve open/close is CAN-commanded; see §3) \\
+\sw{main.cpp}            & local  & Setup, loop, button handling, CAN command dispatch (\sw{Check\_CAN()}), deferred fill-move response state machine, battery/LCO polling, QR test-release timing \\
+\sw{KJO\_Valve}          & local  & Base valve: servo drive, pot feedback (Fill valve open/close is CAN-commanded; see §4) \\
 \sw{KJO\_QR\_Servo}      & local  & Servo-only actuator base class (time-based position) \\
 \sw{KJO\_QR\_Slave}      & local  & QR release actuator: latches \cmd{CAN\_QR\_RELEASE}, reads connection-sense (\sig{AUX\_IO\_3}), local override \\
 \sw{KJO\_GPIO}           & local  & MCP23X17 pin assignments, QR servo constants \\
-\sw{KJO\_GSE\_Display}   & local  & SH1107 OLED display, SD log helpers \\
+\sw{KJO\_Analog}         & local  & ADS1015 channel assignments, LiPo scale, AUX/LCO threshold \\
+\sw{KJO\_GSE\_Display}   & local  & SD log-file finder (\sw{Find\_Available\_File()}) only -- OLED display moved to shared \sw{KJO\_Status\_Display} \\
 \sw{KJO\_Logging}        & local  & SD log file constants \\
 \sw{KJO\_System\_Config} & shared & Version, platform constants \\
+\sw{KJO\_CAN\_Command\_Defs} & shared & CAN command codes, packet structures, node IDs \\
+\sw{KJO\_CAN\_Client}    & shared & CAN transport (send/poll/request-with-timeout) \\
+\sw{KJO\_Valve\_Timing}  & shared & Fill valve move-timeout constant (shared with EMU) \\
+\sw{KJO\_LCO\_Sense}     & shared & AUX/LCO ADS1015 channel + threshold (shared with EMU) \\
+\sw{KJO\_Status} / \sw{KJO\_Status\_Display} & shared & Tagged Serial/SD logging (\sw{Log\_Message()}) and scrolling OLED status (\sw{Report\_Status()}) \\
 \bottomrule
 \end{tabularx}
 \end{center}
@@ -125,7 +139,7 @@ Module & Location & Responsibility \\
 \sw{Fill\_Valve} is a plain \texttt{Valve} instance -- there is no derived
 class for it. The \sw{Valve} base class provides servo drive and
 potentiometer feedback; \sw{open()}/\sw{close()} are called directly from
-\sw{Check\_CAN()} (see §3).
+\sw{Check\_CAN()} (see §4).
 
 \texttt{QR\_Servo} (base) $\longleftarrow$ \texttt{QR\_Slave} (derived).
 
@@ -139,19 +153,61 @@ local Button~A override (\sw{localRelease()} / \sw{localHold()}).
 
 \begin{figure}[H]
 \centering
-\begin{tikzpicture}[node distance=0.55cm]
+\begin{tikzpicture}[node distance=0.5cm]
   \node[flowterminal] (start)  {loop()};
   \node[flowproc, below=of start]  (qr)    {QR\_Release.update()};
-  \node[flowproc, below=of qr]     (btn)   {Check\_Buttons()};
-  \node[flowproc, below=of btn]    (fv)    {Check\_Fill\_Valve\_Move()};
+  \node[flowproc, below=of qr]     (intl)  {Fill Valve safety interlock\\(inline; closes on QR separation)};
+  \node[flowproc, below=of intl]   (btn)   {Check\_Buttons()};
+  \node[flowproc, below=of btn]    (bat)   {Check\_Battery()};
+  \node[flowproc, below=of bat]    (lco)   {Check\_LCO\_Watch()};
+  \node[flowproc, below=of lco]    (fv)    {Check\_Fill\_Valve\_Move()};
+  \node[flowproc, below=of fv]     (qrt)   {Check\_QR\_Test\_Release()};
+  \node[flowproc, below=of qrt]    (pres)  {Check\_CAN\_Presence()};
+  \node[flowproc, below=of pres]   (can)   {Check\_CAN()};
   \draw[flowarrow] (start)--(qr);
-  \draw[flowarrow] (qr)--(btn);
-  \draw[flowarrow] (btn)--(fv);
-  \draw[flowarrow] (fv.south) -- ++(0,-0.4) -- ++(3.5,0)
-    -- ++(0,5.5) -- (start.east);
+  \draw[flowarrow] (qr)--(intl);
+  \draw[flowarrow] (intl)--(btn);
+  \draw[flowarrow] (btn)--(bat);
+  \draw[flowarrow] (bat)--(lco);
+  \draw[flowarrow] (lco)--(fv);
+  \draw[flowarrow] (fv)--(qrt);
+  \draw[flowarrow] (qrt)--(pres);
+  \draw[flowarrow] (pres)--(can);
+  \draw[flowarrow] (can.south) -- ++(0,-0.4) -- ++(4.0,0)
+    -- ++(0,10.0) -- (start.east);
 \end{tikzpicture}
 \caption{GSEMU main loop control flow.}
 \end{figure}
+
+%═══════════════════════════════════════════════════════════════════════════════
+\section{CAN Command Table}
+%═══════════════════════════════════════════════════════════════════════════════
+
+\sw{Check\_CAN()} (called every \sw{loop()}) is GSEMU's sole CAN command
+dispatcher. Every command it handles:
+
+\begingroup
+\footnotesize
+\begin{longtable}{@{}p{3.4cm}p{2.3cm}p{2.1cm}p{6.4cm}@{}}
+\toprule
+Command & Sent by & Response & Notes \\
+\midrule
+\cmd{CAN\_\allowbreak GET\_\allowbreak HEALTH\_\allowbreak STATUS} & Any node & uint16 bitfield & SD/RTC init-failure bits plus link-sense-lost \\
+\cmd{CAN\_\allowbreak PING} & Any node & ack & Boot-time presence check \\
+\cmd{CAN\_\allowbreak ARM\_\allowbreak LCO\_\allowbreak WATCH} & EMU & ack & Arms/disarms \sw{Check\_\allowbreak LCO\_\allowbreak Watch()}'s AUX-channel polling \\
+\cmd{CAN\_\allowbreak QR\_\allowbreak RELEASE} & EMU & none (fire-and-forget) & Permanent latch via \sw{commandRelease()}; production launch only \\
+\cmd{CAN\_\allowbreak QR\_\allowbreak TEST\_\allowbreak RELEASE} & RCU\_\allowbreak UNIT\_\allowbreak TEST & ack & Reversible, self-reverting test release (see §5) \\
+\cmd{CAN\_\allowbreak OPEN\_\allowbreak FILL\_\allowbreak VALVE} & EMU or RCU\_\allowbreak UNIT\_\allowbreak TEST & deferred ack + position & See §4 \\
+\cmd{CAN\_\allowbreak CLOSE\_\allowbreak FILL\_\allowbreak VALVE} & EMU or RCU\_\allowbreak UNIT\_\allowbreak TEST & deferred ack + position & See §4 \\
+\cmd{CAN\_\allowbreak GET\_\allowbreak GSEMU\_\allowbreak BATTERY} & EMU & float volts & \\
+\cmd{CAN\_\allowbreak GET\_\allowbreak FILL\_\allowbreak VALVE\_\allowbreak POSITION} & RCU\_\allowbreak UNIT\_\allowbreak TEST & float \% & Bench-test only; see §4.3 \\
+\cmd{CAN\_\allowbreak GET\_\allowbreak LCO\_\allowbreak STATE} & EMU & float (0/1) & Read-only AUX/LCO sense; does not touch \texttt{lco\_\allowbreak watch\_\allowbreak armed} \\
+\bottomrule
+\end{longtable}
+\endgroup
+
+Any command not listed above (e.g. the LCMU-side TARE/weight/thrust
+commands) is not addressed to GSEMU and falls through unhandled by design.
 
 %═══════════════════════════════════════════════════════════════════════════════
 \section{Fill Valve Control}
@@ -176,16 +232,19 @@ whole fill session.
         confirms the move, or \texttt{MOVE\_TIMEOUT}+100~ms elapses,
         reporting the resulting position either way.
   \item This same mechanism is also reachable directly via
-        RCU\_UNIT\_TEST's \cmd{OPEN\_FILL\_VALVE}/\cmd{CLOSE\_FILL\_VALVE}
-        bench-test commands, for exercising the valve without a full fill
-        session.
+        RCU\_UNIT\_TEST's LoRa \cmd{OPEN\_FILL\_VALVE}/\cmd{CLOSE\_FILL\_VALVE}
+        commands (distinct identifiers from, but relayed by EMU as,
+        \cmd{CAN\_OPEN\_FILL\_VALVE}/\cmd{CAN\_CLOSE\_FILL\_VALVE}), for
+        exercising the valve without a full fill session.
 \end{enumerate}
 \end{sloppypar}
 
 \subsection{Local Button Override}
 
 Three panel buttons on the MCP23X17 provide local control during ground
-operations:
+operations. Filed here because Buttons~B/C act on the Fill valve, this
+section's subject -- Button~A operates the QR release servo (§5's
+subject) and is cross-referenced there too:
 
 \begin{center}
 \begin{tabularx}{\textwidth}{@{}lY@{}}
@@ -212,8 +271,9 @@ Buttons~B and~C bypass EMU command authority; use for ground testing only.
 \subsection{Fill Valve Position Query}
 
 \begin{sloppypar}
-EMU (or RCU\_UNIT\_TEST) can poll the Fill valve's live position at any
-time via \cmd{CAN\_GET\_FILL\_VALVE\_POSITION}, answered immediately with
+\cmd{CAN\_GET\_FILL\_VALVE\_POSITION} is an RCU\_UNIT\_TEST-only bench-test
+command (production traffic never sends it) that polls the Fill valve's
+live position at any time, answered immediately with
 \sw{Fill\_Valve.getPositionPercent()} -- independent of any in-progress
 open/close move.
 \end{sloppypar}
@@ -250,10 +310,11 @@ One MCP23X17 expansion I/O line is used for connection sensing:
 \end{itemize}
 
 \begin{warningbox}
-\texttt{QR\_SERVO\_PWM\_HOLD} and \texttt{QR\_SERVO\_PWM\_OPEN} are
-placeholder values in the current firmware.  They \textbf{must} be calibrated
-on the bench before any live operation.  Verify servo travel direction and
-endpoint positions before connecting the umbilical.
+\texttt{QR\_SERVO\_PWM\_HOLD} and \texttt{QR\_SERVO\_PWM\_OPEN} were
+bench-calibrated in March 2026 (superseding earlier placeholder values
+seeded from the Fill valve's calibration). Re-verify servo travel
+direction and endpoint positions on the bench after any hardware change
+before connecting the umbilical.
 \end{warningbox}
 
 \subsection{Servo Behaviour}
@@ -312,12 +373,21 @@ Method & Action \\
 %═══════════════════════════════════════════════════════════════════════════════
 
 The SH1107 OLED provides local status when no serial console is available.
-\sw{KJO\_GSE\_Display} provides:
+The scrolling status display itself lives in the shared
+\sw{KJO\_Status\_Display} module (used identically by EMU, GSEMU, and
+LCMU), not in \sw{KJO\_GSE\_Display}:
+
 \begin{itemize}[nosep]
-  \item \sw{scrollMessage(msg)}: scrolls a text message across the display.
-  \item \sw{displayValveStatus(pct)}: shows the current valve open percentage.
-  \item \sw{displayLogEntry(msg)}: echoes SD log entries to the display.
+  \item \sw{Report\_Status(display, tag, message, delay\_flag)}: logs the
+        message (Serial + SD, timestamped, via \sw{Log\_Message()}), then
+        redraws the scrolling display showing \texttt{"[TAG] message"}
+        (no timestamp on-screen) in a fixed \texttt{MAX\_LINES}-line
+        circular buffer, then delays 1~s if \texttt{delay\_flag} is true.
 \end{itemize}
+
+\sw{KJO\_GSE\_Display}'s only remaining responsibility is
+\sw{Find\_Available\_File()}, which scans the SD card root for the next
+unused \texttt{Log\_N.txt} index at boot.
 
 %═══════════════════════════════════════════════════════════════════════════════
 \section{SD Logging}
@@ -325,8 +395,10 @@ The SH1107 OLED provides local status when no serial console is available.
 
 Log files are stored in the root of the SD card as \texttt{Log\_N.txt}
 (N is auto-incremented to avoid overwriting existing files).
-Each record is time-stamped (PCF8523) and logs CMD/STATUS transitions, servo
-position changes, button presses, and system events.
+Each record is time-stamped and tagged (via the shared \sw{Log\_Message()}),
+recording button presses, CAN command dispatch, Fill valve and QR release
+events, and other system events -- a generic tagged status/event log, not
+a fixed set of transition types.
 
 %═══════════════════════════════════════════════════════════════════════════════
 \section{Parameters \& Flags}
@@ -337,7 +409,7 @@ compiled into this firmware image, together with the source file where each
 is defined. It is meant as a single reference point when tracing or changing
 a timing, threshold, or calibration value. Pin/channel wiring assignments,
 CAN command opcodes, and packet byte layouts are documented separately (the
-Hardware Overview pin map and the Command Set sections above) and are not
+Hardware Overview pin map and the CAN Command Table, §3, above) and are not
 repeated here. Parameters marked \emph{(shared)} are defined in
 \sw{KJO\_\allowbreak Shared\_\allowbreak Libraries} and must agree with the same constant used on
 the other board(s) that consume it.
@@ -368,6 +440,12 @@ Parameter & Value & Description & Source File \\
 \endgroup
 
 \subsubsection*{Fill Valve Calibration (Travel Endpoints \& Ball-Valve Geometry)}
+
+\textit{Note: the servo/pot channel these values were calibrated against
+(PCA9685 channel 6 / ADC pin A1) is itself a temporary diagnostic
+reassignment, not the original channel~4/A4 design -- see
+\texttt{KJO\_Valve.h} for the bench-fault-isolation rationale. Re-verify
+these endpoints if the channel assignment reverts.}
 
 \begingroup
 \footnotesize
@@ -483,6 +561,21 @@ Version & Date & Notes \\
                    match (only the umbilical/link-sense functions survive); fixed the Module
                    Summary and Class Hierarchy (\S2) and Main Loop Control Flow diagram
                    (\S2.3) to match. \\
+0.7 & September 2026 & Doc-vs-code audit fixes: resolved a self-contradiction on QR servo
+                   PWM calibration (bench-calibrated March 2026, not a placeholder -- the old
+                   warning box was itself stale); completed the Main Loop diagram (added the
+                   Fill Valve safety interlock and \sw{Check\_CAN()}, both previously missing);
+                   added a new \S3 CAN Command Table (all 10 commands \sw{Check\_CAN()}
+                   handles, several previously undocumented anywhere); rewrote \S6 OLED
+                   Display around the real shared \sw{Report\_Status()} API (the previously
+                   documented \sw{scrollMessage()} etc.\ do not exist); corrected the battery
+                   chemistry (2S, not 1S) in the Component Summary; added the ADS1015 ADC and
+                   MCP2515 CAN controller to the Component Summary and Hardware Block Diagram
+                   (both omitted despite being central to the rest of the document); expanded
+                   the Module Summary to include all locally- and shared-header modules
+                   actually in use; fixed a dangling ``Command Set sections above''
+                   cross-reference; clarified that \cmd{CAN\_GET\_FILL\_VALVE\_POSITION} is an
+                   RCU\_UNIT\_TEST-only bench command, not normal EMU traffic. \\
 \bottomrule
 \end{tabularx}
 \end{center}
