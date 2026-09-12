@@ -1,6 +1,6 @@
 ﻿\documentclass[11pt,letterpaper]{article}
 \input{../shared/KJO_preamble}
-\newcommand{\docversion}{0.8}
+\newcommand{\docversion}{0.9}
 \newcommand{\docdate}{September 2026}
 \lhead{\textsc{KJO Engine Management Unit}}
 \rhead{\textsc{EMU Reference} --- v\docversion}
@@ -58,16 +58,16 @@ Battery           & 3.7~V LiPo; voltage divider on ADS1015       & ADC     & \\
 Pin Name & Direction & Function \\
 \midrule
 \sig{BUTTON\_A\_EIO}                              & IN  & Front-panel button A (hold-to-open Ox valve, dumps via chamber) \\
-\sig{BUTTON\_B\_EIO}                              & IN  & Front-panel button B (close Fill valve) \\
-\sig{BUTTON\_C\_EIO}                              & IN  & Front-panel button C (open Fill valve) \\
+\sig{BUTTON\_B\_EIO}                              & IN  & Front-panel button B; currently unused (see §\ref{sec:emu-local-buttons}) \\
+\sig{BUTTON\_C\_EIO}                              & IN  & Front-panel button C; currently unused (see §\ref{sec:emu-local-buttons}) \\
 \sig{IGNITER\_EIO}                                & OUT & Igniter relay drive \\
 \sig{BUZZER\_EIO}                                 & OUT & Buzzer relay drive \\
-\sig{AUX\_IO\_1} (\sig{FILL\_VALVE\_CMD\_EIO})    & OUT & Fill valve CMD line to GSEMU \\
-\sig{AUX\_IO\_2} (\sig{FILL\_VALVE\_STATUS\_EIO}) & IN  & Fill valve STATUS line from GSEMU \\
-\sig{AUX\_IO\_3} (\sig{QR\_CMD\_EIO})             & OUT & Umbilical QR release CMD (HIGH = hold, LOW = release) \\
-\sig{AUX\_IO\_4} (\sig{RELEASE\_STATE\_EIO})      & IN  & Separation state (INPUT\_PULLUP; LOW = connected, HIGH = separated) \\
-\sig{AUX\_IO\_5} (\sig{LAUNCH\_ENABLE\_EIO})      & OUT & Remote start enable to GSEMU (HIGH = disabled, LOW = enabled) \\
-\sig{AUX\_IO\_6} (\sig{REMOTE\_START\_EIO})       & IN  & Remote start command from GSEMU (INPUT\_PULLUP; LOW = start) \\
+\sig{AUX\_IO\_1} (\sig{EMU\_LINK\_SENSE\_EIO}) & IN (INPUT\_PULLUP) & Umbilical link-disconnect sense; wired to GSEMU chassis GND (LOW = connected, HIGH = separated). Fill valve CMD/STATUS formerly carried here has moved to CAN. \\
+\sig{AUX\_IO\_2}                                & --- & Retired/unused (formerly \sig{FILL\_VALVE\_STATUS\_EIO}). \\
+\sig{AUX\_IO\_3} (\sig{QR\_SENSE\_EIO})         & IN (INPUT\_PULLUP) & Umbilical QR physical-connection sense; wired to GSEMU chassis GND (LOW = connected, HIGH = separated). QR release itself is commanded over CAN (\cmd{CAN\_QR\_RELEASE}), not this line. \\
+\sig{AUX\_IO\_4}                                & --- & Retired/unused (formerly \sig{RELEASE\_STATE\_EIO}; its sense function consolidated onto \sig{QR\_SENSE\_EIO}). \\
+\sig{AUX\_IO\_5}                                & --- & Retired/unused (formerly \sig{LAUNCH\_ENABLE\_EIO}). \\
+\sig{AUX\_IO\_6}                                & --- & Retired/unused (formerly \sig{REMOTE\_START\_EIO}). \\
 \bottomrule
 \end{tabularx}
 \end{center}
@@ -125,8 +125,7 @@ Module & Location & Responsibility \\
 \midrule
 \sw{main.cpp}              & local  & Setup, loop, command dispatch, state machines \\
 \sw{KJO\_Valve}            & local  & Base valve: servo drive, pot feedback \\
-\sw{KJO\_Master\_Valve}    & local  & Fill valve CMD/STATUS GPIO handshake \\
-\sw{KJO\_QR\_Master}       & local  & Umbilical QR release proxy \\
+\sw{KJO\_QR\_Master}       & local  & Umbilical connection-sense reader (see §6) \\
 \sw{KJO\_Control\_System}  & local  & \sw{Execute\_Command()} routing table \\
 \sw{KJO\_Pressure}         & local  & Pressure transducer read / convert \\
 \sw{KJO\_Temperature}      & local  & Analog temperature transducer \\
@@ -228,33 +227,41 @@ The EMU operates as a top-level state machine with three states:
          ENGINE\_STARTING.}
 \end{figure}
 
-\subsection{Engine Start Sequence (7 Steps)}
+\subsection{Engine Start Sequence (10 Steps)}
 
 When \cmd{START\_ENGINE} or a LCO panel button press is received, the EMU
-enters \texttt{ENGINE\_STARTING} and advances through seven steps
-non-blockingly in \sw{Check\_Engine\_Start()}:
+enters \texttt{ENGINE\_STARTING} and advances through ten steps (0--9)
+non-blockingly in \sw{Check\_Engine\_Start()}. Propellant flow is
+established (steps 6--8) \emph{before} the igniter fires (step 9) --
+reversed from an earlier design that fired the igniter first. Fuel opens
+before Ox since it has the longer physical path to the chamber and needs
+the head start.
 
 \begin{center}
-\begin{tabular}{@{}clp{9cm}@{}}
+\begin{tabular}{@{}clp{8.5cm}@{}}
 \toprule
 Step & Trigger & Action \\
 \midrule
-0 & immediate   & Verify Ox and Fuel valves are closed; abort on failure \\
-1 & step 0 pass & Command umbilical QR release; start 3~s separation timer \\
-2 & timer       & Poll \sw{isSeparated()}; abort on timeout \\
-3 & separation  & Fire igniter relay (\texttt{IGNITER\_FIRE\_DURATION\_MS} pulse);
-                  start delay-1 timer \\
-4 & delay-1     & Open Ox feed valve \\
-5 & Ox stopped  & Start delay-2 timer \\
-6 & delay-2     & Open Fuel feed valve \\
-7 & Fuel stopped& Send OK response; set \sw{engine\_running = true} \\
+0 & immediate       & Verify Ox and Fuel valves are closed; abort ($r\_val=-1$) on failure \\
+1 & step 0 pass     & If GSEMU is CAN-reachable, close the Fill valve; otherwise skip to step 3 \\
+2 & timer / CAN ack & Wait for the Fill valve close to confirm; abort ($r\_val=-4$) on failure \\
+3 & step 1/2 pass   & Send \cmd{CAN\_QR\_RELEASE} (fire-and-forget); start \texttt{QR\_RELEASE\_TIMEOUT\_MS} separation timer \\
+4 & timer           & Poll \sw{QR\_Release.isSeparated()}; abort ($r\_val=-2$) on timeout \\
+5 & separation      & Fixed \texttt{START\_DWELL\_MS} pause; then open Fuel feed valve \\
+6 & Fuel moving     & Wait for Fuel valve to confirm open; abort via \sw{Execute\_Abort()} ($r\_val=-5$) if stuck/stalled; then start \texttt{FUEL\_FLOW\_DELAY\_MS} timer \\
+7 & delay           & Open Ox feed valve \\
+8 & Ox moving       & Wait for Ox valve to confirm open; abort via \sw{Execute\_Abort()} ($r\_val=-5$) if stuck/stalled; then start \texttt{OX\_FLOW\_DELAY\_MS} timer \\
+9 & delay           & Fire igniter relay (\texttt{IGNITER\_FIRE\_DURATION\_MS} pulse); send OK response; set \sw{engine\_running = true} \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-Any abort at steps 0--2 sends a \texttt{Command\_Return\_Packet} with
+Any abort at steps 0--4 sends a \texttt{Command\_Return\_Packet} with
 \texttt{status = false} and an \texttt{r\_val} error code
-($-1$ = precondition failure, $-2$ = QR timeout).
+($-1$ = precondition failure, $-4$ = Fill valve close failure, $-2$ = QR
+separation timeout). A stuck/stalled Fuel or Ox valve at steps 6 or 8
+($r\_val=-5$) routes through \sw{Execute\_Abort()} instead, since
+propellant may already be flowing by that point.
 \cmd{RESET} cancels the sequence at any step.
 
 \subsection{Servo Mechanical Geometry and Calibration}
@@ -311,41 +318,62 @@ Fuel     & 2130 & 3780 & 1650 & $\sim$87.9\textdegree & 1170 & 2918 & 1748 \\
 \end{tabular}
 \end{center}
 
-\subsection{Master\_Valve Class (\sw{KJO\_Master\_Valve})}
+\subsection{Local Button Functions}
+\label{sec:emu-local-buttons}
 
-\sw{Master\_Valve} implements the CMD/STATUS GPIO handshake for
-the Fill valve.  The Fill valve servo and pot reside on the GSEMU;
-the EMU controls it via \sig{AUX\_IO\_1} (CMD) and monitors
-\sig{AUX\_IO\_2} (STATUS).
-
-%═══════════════════════════════════════════════════════════════════════════════
-\section{Fill Valve Handshake Protocol}
-%═══════════════════════════════════════════════════════════════════════════════
-
-The Fill valve servo and potentiometer reside on the GSEMU.
-The EMU and GSEMU exchange state using two GPIO lines:
+\sw{Check\_Buttons()} polls the three front-panel buttons (MCP23X17
+expander) every \sw{loop()} iteration, but is skipped entirely while
+\texttt{emu\_state} is \texttt{ENGINE\_STARTING}, \texttt{VALVE\_MOVING},
+\texttt{ABORTING}, or \texttt{ABORT\_LATCHED}.
 
 \begin{center}
-\begin{tabular}{@{}lll@{}}
+\begin{tabularx}{\textwidth}{@{}lY@{}}
 \toprule
-Signal & Driver & Meaning when HIGH \\
+Button & Action \\
 \midrule
-\sig{AUX\_IO\_1} (CMD)    & EMU   & Fill valve commanded open \\
-\sig{AUX\_IO\_2} (STATUS) & GSEMU & Fill valve has reached commanded position \\
+A & \textbf{Hold-to-open}: opens the Ox valve (dumps pressurant through the
+    chamber) while held; closes it on release. One short beep on press. \\
+B & Currently unused. Formerly commanded the Fill valve closed directly;
+    the Fill valve is now GSEMU's own actuator, commanded only over CAN
+    (\cmd{BEGIN\_FILL}/\cmd{STOP\_FILL}). Local bench testing of the Fill
+    valve is done via GSEMU's own front-panel buttons. \\
+C & Currently unused, for the same reason as Button~B. \\
 \bottomrule
-\end{tabular}
+\end{tabularx}
 \end{center}
 
-\textbf{Open sequence:}
-\begin{enumerate}[nosep]
-  \item EMU calls \sw{Fill\_Valve.open()}.
-  \item \sw{Master\_Valve} asserts CMD = HIGH.
-  \item GSEMU \sw{Slave\_Valve.update()} detects CMD rising edge; drives servo to open.
-  \item GSEMU asserts STATUS = HIGH when servo reaches open position.
-  \item EMU reads STATUS = HIGH; reports completion.
-\end{enumerate}
+\begin{warningbox}
+Button~A opens the Ox valve immediately while held, venting
+N\textsubscript{2}O through the combustion chamber. Ensure the area is
+clear before pressing it.
+\end{warningbox}
 
-\textbf{Close sequence}: CMD de-asserted (LOW); GSEMU closes servo; STATUS driven LOW.
+%═══════════════════════════════════════════════════════════════════════════════
+\section{Fill Valve CAN Protocol}
+%═══════════════════════════════════════════════════════════════════════════════
+
+The Fill valve servo and potentiometer reside on the GSEMU. The wired
+\sig{AUX\_IO\_1}/\sig{AUX\_IO\_2} CMD/STATUS handshake this section
+formerly described has been retired; the EMU now controls the Fill
+valve entirely over CAN.
+
+\textbf{Open/close sequence:}
+\begin{sloppypar}
+\begin{enumerate}[nosep]
+  \item EMU sends \cmd{CAN\_OPEN\_FILL\_VALVE} or \cmd{CAN\_CLOSE\_FILL\_VALVE}
+        to \texttt{CAN\_NODE\_GSEMU} and awaits a response.
+  \item GSEMU's \sw{Check\_CAN()} calls \sw{Fill\_Valve.open()}/\sw{close()}
+        immediately, but \emph{defers} its CAN response.
+  \item GSEMU's \sw{Check\_Fill\_Valve\_Move()} (called every \sw{loop()})
+        sends the deferred response once \sw{Fill\_Valve.isStopped()}
+        confirms the move (or its own \texttt{MOVE\_TIMEOUT}-based deadline
+        expires), reporting the resulting position.
+  \item EMU treats the request as failed if no response arrives within
+        \texttt{EMU\_GSEMU\_FILL\_VALVE\_MOVE\_TIMEOUT\_MS} (see §10
+        Parameters \& Flags), which is sized to cover GSEMU's own
+        move watchdog plus CAN round-trip margin.
+\end{enumerate}
+\end{sloppypar}
 
 %═══════════════════════════════════════════════════════════════════════════════
 \section{Command Dispatch}
@@ -376,7 +404,7 @@ Command & EMU Action \\
 \midrule
 \cmd{HEARTBEAT}               & Respond with EMU voltage and all three valve positions \\
 \cmd{RESET}                   & Execute\_Abort(): Fill/Fuel close, Ox opens (dump), igniter off, buzzer off, recording off, indicator off \\
-\cmd{BEGIN\_FILL}             & Open Fill valve (Master\_Valve); start continuous pressure recording \\
+\cmd{BEGIN\_FILL}             & Open Fill valve (CAN to GSEMU); start continuous pressure recording \\
 \cmd{STOP\_FILL}              & Close Fill valve; recording continues until ambient \\
 \cmd{DUMP}                    & Open Ox valve to vent pressurant through the chamber (deferred; sends response when complete; no dedicated Dump valve) \\
 \cmd{STOP\_DUMP}              & Close Ox valve (deferred) \\
@@ -386,7 +414,7 @@ Command & EMU Action \\
 \cmd{CLOSE\_FUEL\_FEED}       & Close Fuel valve (deferred) \\
 \cmd{START\_ENGINE\_FLOWS}    & Close Fill; open Ox + Fuel simultaneously (deferred dual-valve) \\
 \cmd{STOP\_ENGINE\_FLOWS}     & Close Ox + Fuel simultaneously (deferred dual-valve) \\
-\cmd{START\_ENGINE}           & Arm 7-step ignition sequence (response sent asynchronously) \\
+\cmd{START\_ENGINE}           & Arm 10-step ignition sequence (response sent asynchronously) \\
 \cmd{ENABLE\_LCO\_CONTROL}    & param $\neq$ 0: assert LAUNCH\_ENABLE\_EIO LOW, set \sw{lco\_enabled};
                                 param = 0: deassert HIGH, clear \sw{lco\_enabled} \\
 \cmd{START\_PRESSURE\_RECORDING} & Activate continuous sensor recording \\
@@ -396,7 +424,7 @@ Command & EMU Action \\
 \cmd{READ\_CHAMBER\_PRESSURE} & Return chamber pressure (PSI) \\
 \cmd{READ\_TANK\_TEMP}        & Return tank temperature \\
 \cmd{READ\_CHAMBER\_TEMP}     & Return chamber temperature \\
-\cmd{QR\_RELEASE}             & Call \sw{QR\_Master::release()} (CMD LOW); response immediate \\
+\cmd{QR\_RELEASE}             & Bench-test only: reversible timed release via \cmd{CAN\_QR\_TEST\_RELEASE} (GSEMU's local-override mechanism); production launch release happens automatically as Step 3 of the Engine Start sequence via \cmd{CAN\_QR\_RELEASE} \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -407,35 +435,44 @@ Command & EMU Action \\
 
 \subsection{Overview}
 
-\sw{QR\_Master} is the EMU-side proxy for the umbilical quick-release actuator
-that resides on the GSEMU.  It drives two MCP23X17 expansion I/O lines:
+The umbilical QR servo and its drive latch reside on the GSEMU.
+EMU-side \sw{QR\_Master} no longer commands it via a dedicated wire --
+release is commanded over CAN (\cmd{CAN\_QR\_RELEASE}, fire-and-forget).
+\sw{QR\_Master}'s only remaining job is reading the umbilical's physical
+connection-sense line:
 
 \begin{itemize}[nosep]
-  \item \sig{AUX\_IO\_3} (\sig{QR\_CMD\_EIO}) --- OUTPUT.  Level-based command
-        to the GSEMU QR servo.
-  \item \sig{AUX\_IO\_4} (\sig{RELEASE\_STATE\_EIO}) --- INPUT\_PULLUP.  Wired
+  \item \sig{AUX\_IO\_3} (\sig{QR\_SENSE\_EIO}) --- INPUT\_PULLUP.  Wired
         to GSEMU chassis GND through the AUX connector.  Reads LOW while the
         umbilical is physically connected; floats HIGH when the connector is
-        removed (separation confirmed).
+        removed (separation confirmed).  Kept as a dedicated wire (not CAN)
+        because once the umbilical separates, EMU and GSEMU can no longer
+        communicate over CAN at all.
 \end{itemize}
 
-\begin{center}
-\begin{tabular}{@{}lll@{}}
-\toprule
-\sig{QR\_CMD\_EIO} Level & Driver & Meaning \\
-\midrule
-HIGH (default) & EMU & Latch engaged --- GSEMU servo held at hold position \\
-LOW            & EMU & Latch open --- GSEMU servo commanded to release position \\
-\bottomrule
-\end{tabular}
-\end{center}
+\begin{sloppypar}
+\sw{QR\_Master} exposes \sw{isConnected()} and \sw{isSeparated()} reads of
+this line -- it has no \sw{release()}/\sw{hold()} methods.  Release is a
+one-shot CAN command sent directly from \sw{main.cpp}:
+
+\begin{itemize}[nosep]
+  \item \textbf{Production launch:} \cmd{CAN\_QR\_RELEASE} is sent
+        automatically as Step 3 of the Engine Start sequence (see §3.3).
+        GSEMU latches this permanently -- once triggered, the spring-loaded
+        latch cannot be electrically re-engaged; only physical re-latching
+        (or GSEMU's own front-panel Button~A override) changes it.
+  \item \textbf{Bench testing:} RCU\_UNIT\_TEST's \cmd{QR\_RELEASE} command
+        instead sends \cmd{CAN\_QR\_TEST\_RELEASE}, which drives GSEMU's
+        reversible local-override mechanism (auto-reverting after a fixed
+        duration) and never touches the permanent production latch.
+\end{itemize}
+\end{sloppypar}
 
 \begin{warningbox}
 Ensure the launch sequence has been verified and all personnel are clear
-before issuing \cmd{QR\_RELEASE}.  The umbilical disconnection releases
-pressurised N\textsubscript{2}O.  Calling \sw{hold()} after \sw{release()}
-returns the CMD line HIGH but cannot re-engage a latch that has already
-opened mechanically.
+before the Engine Start sequence reaches Step 3.  The umbilical
+disconnection releases pressurised N\textsubscript{2}O, and production
+release cannot be electrically undone once commanded.
 \end{warningbox}
 
 %═══════════════════════════════════════════════════════════════════════════════
@@ -847,6 +884,19 @@ Version & Date & Notes \\
                    threshold, and calibration constants across the valve, pressure,
                    engine-start, indicator, burn-recording, radio, and CAN subsystems,
                    with source-file attribution for each. \\
+0.9 & September 2026 & Corrected stale wired-GPIO descriptions left over from the CAN
+                   redesign: removed \S3.5 Master\_Valve Class (the class no longer
+                   exists); rewrote \S4 as ``Fill Valve CAN Protocol'' describing the
+                   actual \cmd{CAN\_OPEN\_FILL\_VALVE}/\cmd{CAN\_CLOSE\_FILL\_VALVE}
+                   mechanism; rewrote \S6 Umbilical Quick-Release to describe
+                   \sw{QR\_Master} as a sense-only reader and \cmd{CAN\_QR\_RELEASE} as
+                   the real release path; corrected 5 of 6 \sig{AUX\_IO} pin-map rows
+                   (only \sig{BUTTON\_A\_EIO}'s row and the umbilical/link-sense
+                   functions survive; Fill valve CMD/STATUS and the old QR/launch/
+                   remote-start lines are retired); added new \S3.5 Local Button
+                   Functions documenting all three front-panel buttons (only Button~A
+                   is still functional); corrected two stale Command Table rows
+                   (\cmd{BEGIN\_FILL}, \cmd{QR\_RELEASE}). \\
 \bottomrule
 \end{tabularx}
 \end{center}
