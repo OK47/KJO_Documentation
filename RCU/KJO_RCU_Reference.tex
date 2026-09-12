@@ -1,6 +1,6 @@
 ﻿\documentclass[11pt,letterpaper]{article}
 \input{../shared/KJO_preamble}
-\newcommand{\docversion}{0.5}
+\newcommand{\docversion}{0.6}
 \newcommand{\docdate}{September 2026}
 \lhead{\textsc{KJO Remote Control Unit}}
 \rhead{\textsc{RCU Reference} --- v\docversion}
@@ -45,20 +45,20 @@ Battery          & 3.7~V LiPo; voltage divider on A7             & ADC A7 \\
 \subsection{Pin Assignments}
 
 \begin{center}
-\begin{tabular}{@{}lll@{}}
+\begin{tabularx}{\textwidth}{@{}llY@{}}
 \toprule
 Signal & Pin & Notes \\
 \midrule
 \sig{SCREEN\_CS}  & 11  & TFT chip select \\
 \sig{SCREEN\_DC}  & 10  & TFT data/command \\
 \sig{SD\_CS}      &  5  & SD card chip select \\
-\sig{STMPE\_CS}   &  6  & Touch controller CS (also TOUCH\_IRQ) \\
+\sig{STMPE\_CS}   &  6  & Touch pen-down IRQ (\sig{TOUCH\_IRQ} aliases this pin). Legacy name from an earlier STMPE610-era touch controller; the current TSC2007 is pure I\textsuperscript{2}C and never uses this pin as an SPI chip-select. \\
 \sig{RFM95\_CS}   &  8  & Radio chip select \\
 \sig{RFM95\_RST}  &  4  & Radio reset \\
 \sig{RFM95\_INT}  &  3  & Radio IRQ \\
 \sig{BAT\_SENSE}  & A7  & Battery voltage (2:1 divider) \\
 \bottomrule
-\end{tabular}
+\end{tabularx}
 \end{center}
 
 \subsection{Hardware Block Diagram}
@@ -103,7 +103,7 @@ Signal & Pin & Notes \\
 \subsection{Module Summary}
 
 \begin{center}
-\begin{tabular}{@{}lll@{}}
+\begin{tabularx}{\textwidth}{@{}llY@{}}
 \toprule
 Module & Location & Responsibility \\
 \midrule
@@ -112,8 +112,9 @@ Module & Location & Responsibility \\
 \sw{KJO\_Radio}        & shared & Radio pin constants, frequency, power \\
 \sw{KJO\_Command\_Defs}& shared & Command codes, packet struct definitions \\
 \sw{KJO\_System\_Config}&shared & Version string, platform identifier \\
+\sw{KJO\_Status}       & shared & Tagged Serial/SD logging (\sw{Log\_Message()}); RCU's single-line message panel (\sw{Display\_Message()}) does not use the scrolling \sw{KJO\_Status\_Display} module the other three boards share \\
 \bottomrule
-\end{tabular}
+\end{tabularx}
 \end{center}
 
 \subsection{Main Loop Control Flow}
@@ -127,18 +128,22 @@ Module & Location & Responsibility \\
   \node[flowproc, below=of hb]     (los) {Check\_For\_LOS()};
   \node[flowproc, below=of los]    (vlt) {Check\_Update\_Volts\\\_Link\_Time\_Temp()};
   \node[flowproc, below=of vlt]    (prs) {Check\_Pressure\_Status()};
-  \node[flowproc, below=of prs]    (btn) {Check\_Act\_Button\_Press()};
+  \node[flowproc, below=of prs]    (fpg) {Check\_Fill\_Progress\_Status()};
+  \node[flowproc, below=of fpg]    (frt) {Check\_Fill\_Cmd\_Retry()};
+  \node[flowproc, below=of frt]    (btn) {Check\_Act\_Button\_Press()};
   \node[flowproc, below=of btn]    (clr) {Check\_Clear\_Buttons()};
   \draw[flowarrow] (start)--(rx);
   \draw[flowarrow] (rx)--(hb);
   \draw[flowarrow] (hb)--(los);
   \draw[flowarrow] (los)--(vlt);
   \draw[flowarrow] (vlt)--(prs);
-  \draw[flowarrow] (prs)--(btn);
+  \draw[flowarrow] (prs)--(fpg);
+  \draw[flowarrow] (fpg)--(frt);
+  \draw[flowarrow] (frt)--(btn);
   \draw[flowarrow] (btn)--(clr);
   % Loop back
   \draw[flowarrow] (clr.south) -- ++(0,-0.4) -- ++(3.5,0)
-    -- ++(0, 8.5) -- (start.east);
+    -- ++(0, 11.0) -- (start.east);
 \end{tikzpicture}
 \caption{RCU main loop control flow.}
 \end{figure}
@@ -149,30 +154,97 @@ Module & Location & Responsibility \\
 
 \subsection{Button Layout and Behaviour}
 
-Six buttons are arranged in a 2$\times$3 grid on the left side of the screen.
-Each button sends one or more commands depending on its mode:
+Nine buttons are arranged in three rows plus one relocated button, reflecting
+the multi-source-ignition redesign (see §\ref{sec:multi-source-ignition}):
 
+\begin{itemize}[nosep]
+  \item \textbf{Row 1} (3 equal columns): Fill, Dump, Status.
+  \item \textbf{Row 2} (2 columns, original button geometry): Arm/Disarm, Launch.
+  \item \textbf{Row 3}: three small ignition-source-select squares (RCU / LCO / AS),
+        left-aligned under Arm/Disarm.
+  \item \textbf{Abort}: relocated off the button grid entirely -- below the Fuel
+        valve indicator, in the lower-right of the screen. Sends the same
+        \cmd{RESET} an earlier ``Reset'' button used to send; there is no
+        functional distinction between ``Reset'' and ``Abort'' in this system,
+        only the relocation and renaming.
+\end{itemize}
+
+\begin{sloppypar}
 \begin{center}
-\begin{tabular}{@{}lllp{7cm}@{}}
+\begin{tabularx}{\textwidth}{@{}lY@{}}
 \toprule
-Button & Row & Col & Behaviour \\
+Button & Behaviour \\
 \midrule
-Fill    & 1 & 1 & \textbf{Latching toggle.} First press $\to$ \cmd{BEGIN\_FILL} (button stays highlighted).
-                  Second press $\to$ \cmd{STOP\_FILL} (button clears). \\
-Dump    & 1 & 2 & \textbf{Latching toggle.} First press $\to$ \cmd{DUMP} (button stays highlighted).
-                  Second press $\to$ \cmd{STOP\_DUMP} (button clears). \\
-Reset   & 2 & 1 & \textbf{Immediate ABORT.} Sends \cmd{RESET}; clears all latched button states
-                  (Fill, Dump, Enable). \\
-Status  & 2 & 2 & Sends \cmd{RCU\_STATUS}; auto-clears after 1~s. \\
-Enable  & 3 & 1 & \textbf{Hold-to-enable LCO.} Press sends \cmd{ENABLE\_LCO\_CONTROL} (param~=~1,
-                  button highlighted); finger-lift sends \cmd{ENABLE\_LCO\_CONTROL} (param~=~0,
-                  button clears). \\
-Launch  & 3 & 2 & \textbf{Guarded by confirmation dialog.} Press opens a modal CONFIRM / CANCEL
-                  overlay.  CONFIRM sends \cmd{START\_ENGINE}; CANCEL dismisses without sending.
-                  See §\ref{sec:confirm_dialog}. \\
+Fill & Every press sends \cmd{BEGIN\_FILL} and opens the fill-progress popup
+       (see §\ref{sec:fill-popup}) -- EMU's own fill-session state decides
+       fresh-start vs.\ resume, so RCU doesn't need to track which. Ignored
+       once the button shows complete (green); \cmd{RESET} is required
+       before filling again. \\
+Dump & \textbf{Latching toggle.} First press $\to$ \cmd{DUMP} (button stays
+       highlighted). Second press $\to$ \cmd{STOP\_DUMP} (button clears). \\
+Status & Sends \cmd{RCU\_STATUS}; momentary highlight, auto-clears. \\
+Arm/Disarm & \textbf{Tap-to-toggle.} Label always shows the action a press
+       will take. Sends \cmd{ARM\_LAUNCH} (param 1 to arm, 0 to disarm) and
+       shows a pending state until EMU acknowledges; the label/highlight
+       only commits to Armed/Disarmed on that ack (reverts on failure,
+       e.g.\ no ignition source selected). \\
+Launch & \textbf{Guarded by confirmation dialog.} Press opens a modal
+       CONFIRM / CANCEL overlay; only CONFIRM attempts \cmd{START\_ENGINE},
+       and only if still armed for the RCU source at that moment -- see
+       §\ref{sec:confirm_dialog}. \\
+RCU / LCO / AS & Ignition-source-select squares. Tap sends
+       \cmd{SET\_IGNITION\_SOURCE} with the corresponding param (0/1/2);
+       shows pending until EMU acknowledges. Rejected by EMU while armed --
+       disarm first to change source. \\
+Abort & \textbf{Immediate.} Sends \cmd{RESET}; clears all latched button
+       states (Fill, Dump) and closes the fill popup if open; brief red
+       flash for visual confirmation. \\
 \bottomrule
-\end{tabular}
+\end{tabularx}
 \end{center}
+\end{sloppypar}
+
+\begin{notebox}
+While armed (\cmd{ARM\_LAUNCH} acknowledged), only Abort, Arm/Disarm, and
+Launch (and only if the RCU source is currently armed) respond to touch --
+every other button press is silently ignored until disarmed.
+\end{notebox}
+
+\subsection{Multi-Source Ignition}
+\label{sec:multi-source-ignition}
+
+The engine can be ignited from one of three sources, selected on EMU via
+\cmd{SET\_IGNITION\_SOURCE} (param 0=RCU, 1=LCO, 2=Airstart) and rejected by
+EMU while armed -- the operator must disarm first to change source. Once a
+source is selected, \cmd{ARM\_LAUNCH} arms or disarms it. Only the RCU
+source's \cmd{START\_ENGINE} is ever sent from this touchscreen; LCO and
+Airstart trigger the ignition sequence through their own independent paths
+on EMU/GSEMU, with RCU's role limited to selecting and arming/disarming
+the source and observing the unprompted \cmd{ENGINE\_START\_ARMED}
+notification EMU sends the instant any source arms the sequence.
+
+\subsection{Fill Progress Popup}
+\label{sec:fill-popup}
+
+Pressing Fill opens a modal popup that intercepts all touch except Abort
+(which still passes through, so an operator can always abort out of a fill
+in progress). While open:
+
+\begin{itemize}[nosep]
+  \item RCU polls \cmd{QUERY\_FILL\_PROGRESS} every
+        \texttt{FILL\_PROGRESS\_STATUS\_INTERVAL} (1.5~s) -- see §10
+        Parameters \& Flags -- updating the Fill button's colour and, if
+        the popup is still open, its displayed numbers.
+  \item A toggle button reads \textbf{Pause} or \textbf{Resume} depending
+        on the last known fill state, sending \cmd{STOP\_FILL} or
+        \cmd{BEGIN\_FILL} respectively.
+  \item A close control dismisses the popup without changing fill state;
+        the fill continues in the background and the Fill button keeps
+        reflecting its progress.
+  \item If EMU responds \texttt{RELAY\_BUSY} to a Fill/Pause/Resume
+        attempt, RCU automatically retries once after a short delay
+        (\texttt{FILL\_CMD\_RETRY\_DELAY\_MS}).
+\end{itemize}
 
 \subsection{Valve Status Indicators}
 
@@ -185,9 +257,12 @@ dedicated Dump indicator --- the \cmd{DUMP} command opens the Ox valve
 (vents pressurant through the chamber), so its state is reflected on the
 Ox indicator.
 
+\begin{sloppypar}
 When the tank pressure exceeds \texttt{PRESSURE\_IN\_SYSTEM\_THRESHOLD}
-(as reported in heartbeat responses), the background of the valve panel
-turns \textbf{red} as a visual pressure warning (see §\ref{sec:pressure_warning}).
+(polled via \cmd{READ\_TANK\_PRESSURE}, \emph{not} carried in the heartbeat
+packet), the background of the valve panel turns \textbf{red} as a visual
+pressure warning (see §\ref{sec:pressure_warning}).
+\end{sloppypar}
 
 \subsection{Status Panels}
 
@@ -198,7 +273,14 @@ turns \textbf{red} as a visual pressure warning (see §\ref{sec:pressure_warning
         current RSSI value.
   \item \textbf{Time and temperature}: Time from DS3231; temperature
         converted to \textdegree F.
-  \item \textbf{Message log}: Scrolling text panel showing last TX/RX events.
+  \item \textbf{QR/CAN status}: a persistent, heartbeat-driven readout
+        (\sw{Update\_\allowbreak QR\_\allowbreak Status\_\allowbreak Display()}) showing umbilical connection
+        state and GSEMU/LCMU CAN reachability, all three carried in every
+        \cmd{HEARTBEAT} response.
+  \item \textbf{Message panel}: a single-line status area
+        (\sw{Display\_Message()}) showing the most recent status message --
+        \emph{not} a scrolling log, and it never displays raw TX/RX
+        traffic (that goes to the SD log only, see §9).
 \end{itemize}
 
 %═══════════════════════════════════════════════════════════════════════════════
@@ -211,72 +293,99 @@ Pressing the \textbf{Launch} button does \emph{not} immediately send
 with two large buttons:
 
 \begin{itemize}[nosep]
-  \item \textbf{CONFIRM} (green) --- sends \cmd{START\_ENGINE} to the EMU
-        and dismisses the overlay.
+  \item \textbf{CONFIRM} (green) --- attempts \cmd{START\_ENGINE}, but
+        \emph{only} if still armed for the RCU source at the moment of
+        touch. If disarmed or re-armed for a different source in the
+        meantime (e.g.\ by another operator, or a race with an in-flight
+        \cmd{ARM\_LAUNCH}/\cmd{SET\_IGNITION\_SOURCE} ack), the command is
+        never sent and the message panel shows ``Launch cancelled -- not
+        armed.'' instead.
   \item \textbf{CANCEL} (red) --- dismisses the overlay without transmitting
         any command.
 \end{itemize}
 
-The overlay cannot be dismissed by touching outside of it; only CONFIRM or
-CANCEL can close it.  This prevents an accidental single touch from initiating
-the ignition sequence.
+Touching anywhere outside both buttons while the overlay is open also
+dismisses it (silently, without the ``START cancelled.'' message CANCEL
+shows) -- there is no way for the overlay to remain stuck open, and an
+accidental touch elsewhere never initiates the ignition sequence.
 
 %═══════════════════════════════════════════════════════════════════════════════
 \section{Pressure Warning}
 \label{sec:pressure_warning}
 %═══════════════════════════════════════════════════════════════════════════════
 
-\sw{Check\_Pressure\_Status()} is called every loop iteration.  It compares
-the most recent tank pressure value (carried in the heartbeat response packet's
-\texttt{r\_val} field, or from the last \cmd{READ\_TANK\_PRESSURE} response)
-against \texttt{PRESSURE\_IN\_SYSTEM\_THRESHOLD}.
+\begin{sloppypar}
+\sw{Check\_Pressure\_Status()} is called every loop iteration, but only
+actively polls \cmd{READ\_TANK\_PRESSURE} (every
+\texttt{PRESSURE\_STATUS\_INTERVAL}, 2~s) while a fill is active \emph{or}
+the warning is already active. Tank pressure is \emph{not} carried in the
+heartbeat packet at all -- this poll is RCU's only source for it.
+\end{sloppypar}
 
-When pressure exceeds the threshold:
+\begin{warningbox}
+Because polling only starts once a fill is active or the warning is
+already latched, a pressure rise that occurs outside those two windows
+(e.g.\ between fill sessions) is not detected by RCU until the next fill
+starts or another mechanism raises it. This is a real monitoring gap in
+the current design, not a documentation nuance.
+\end{warningbox}
+
+Each \cmd{READ\_TANK\_PRESSURE} response is compared against
+\texttt{PRESSURE\_IN\_SYSTEM\_THRESHOLD}. When pressure exceeds it:
 \begin{itemize}[nosep]
-  \item The valve symbol panel background is redrawn in \textbf{red}.
+  \item The valve symbol panel background is redrawn in \textbf{red}
+        (suppressed while the fill popup covers that region; repainted
+        from the cached flag when the popup closes).
   \item A ``PRESSURISED'' warning label is displayed in the status area.
 \end{itemize}
 
-When pressure returns below the threshold (or a \cmd{RESET} response is
-received), the panel background returns to its normal colour and the warning
-label is cleared.
+When a subsequent reading returns below the threshold, the panel
+background returns to its normal colour and the warning label is cleared.
 
 This visual warning mirrors the EMU-side audible pressure alarm (continuous
-buzzer on the EMU) so the operator at the RCU can immediately see that the
-propellant system is under pressure.
+buzzer on the EMU) so the operator at the RCU can see that the propellant
+system is under pressure, but only while the poll described above is
+actually running.
 
 %═══════════════════════════════════════════════════════════════════════════════
 \section{Radio Command Dispatch}
 %═══════════════════════════════════════════════════════════════════════════════
 
 \sw{RCU\_Execute\_Command(command\_ID, p1)} builds and transmits a command
-packet.  \cmd{HEARTBEAT} uses the \texttt{Heartbeat\_Command\_Packet} structure
-(6~bytes, includes RCU voltage); all other commands use \texttt{Command\_Payload}
-(4~bytes, includes a \texttt{short} parameter).
+packet.  \cmd{HEARTBEAT} uses the \texttt{Heartbeat\_Command\_Packet}
+structure -- just the 1-byte command code, \emph{not} RCU voltage (a prior
+design sent RCU voltage here; it was removed as wasted payload the EMU had
+no use for). All other commands use \texttt{Command\_Payload} (4~bytes,
+includes a \texttt{short} parameter).
 
 Responses are parsed in \sw{Check\_and\_Process\_Receive\_Packet()}.
 The \cmd{HEARTBEAT} response is routed to \sw{Process\_Heartbeat\_Response()},
-which updates EMU voltage and all four valve symbols.
+which updates EMU voltage, the three valve symbols (Fill/Ox/Fuel), and the
+QR/GSEMU/LCMU status readout -- all carried in the same packet.
 
 \subsection{Command Reference}
 
-\begin{center}
-\begin{tabularx}{\textwidth}{@{}llY@{}}
+\begingroup
+\footnotesize
+\begin{longtable}{@{}p{2.6cm}p{4.2cm}p{7.0cm}@{}}
 \toprule
 Command & Sent by & Notes \\
 \midrule
-\cmd{HEARTBEAT}               & Automatic (every 5~s) & RCU voltage in payload; EMU returns all valve positions \\
-\cmd{RESET}                   & Reset button          & ABORT; clears all latched button states on RCU \\
-\cmd{BEGIN\_FILL}             & Fill button (1st press) & Starts propellant fill; EMU starts pressure recording \\
-\cmd{STOP\_FILL}              & Fill button (2nd press) & Stops propellant fill; recording continues until ambient \\
-\cmd{DUMP}                    & Dump button (1st press) & Opens Ox valve; vents pressurant through the chamber (no dedicated Dump valve) \\
-\cmd{STOP\_DUMP}              & Dump button (2nd press) & Closes Ox valve \\
-\cmd{ENABLE\_LCO\_CONTROL}    & Enable button (hold / release) & param 1 = enable LCO remote start; param 0 = disable \\
-\cmd{START\_ENGINE}           & Launch + CONFIRM        & Arms 7-step ignition sequence on EMU \\
-\cmd{RCU\_STATUS}             & Status button           & Requests EMU status summary \\
+\cmd{HEARTBEAT} & Automatic (every \texttt{heartbeat\_\allowbreak interval}, 5~s, when no other traffic has occurred) & Keeps the link alive; EMU returns voltage, valve positions, and QR/GSEMU/LCMU status \\
+\cmd{RESET} & Abort button & Immediate abort; clears all latched button states and closes the fill popup if open \\
+\cmd{BEGIN\_\allowbreak FILL} & Fill button (every press); also the fill popup's Resume toggle, and an automatic \texttt{RELAY\_\allowbreak BUSY} retry & Starts/resumes propellant fill; EMU starts pressure recording \\
+\cmd{STOP\_\allowbreak FILL} & Fill popup's Pause toggle; automatic \texttt{RELAY\_\allowbreak BUSY} retry & Pauses propellant fill; recording continues until ambient \\
+\cmd{QUERY\_\allowbreak FILL\_\allowbreak PROGRESS} & Automatic, every \texttt{FILL\_\allowbreak PROGRESS\_\allowbreak STATUS\_\allowbreak INTERVAL} while a fill is active & Drives the Fill button's colour and the popup's displayed numbers \\
+\cmd{READ\_\allowbreak TANK\_\allowbreak PRESSURE} & Automatic, every \texttt{PRESSURE\_\allowbreak STATUS\_\allowbreak INTERVAL}, while a fill is active or the pressure warning is already active & Drives the pressure-warning display (see §\ref{sec:pressure_warning}) -- not a continuous poll \\
+\cmd{DUMP} & Dump button (1st press) & Opens Ox valve; vents pressurant through the chamber (no dedicated Dump valve) \\
+\cmd{STOP\_\allowbreak DUMP} & Dump button (2nd press) & Closes Ox valve \\
+\cmd{SET\_\allowbreak IGNITION\_\allowbreak SOURCE} & RCU/LCO/AS source buttons & Selects the active ignition source (param 0/1/2); rejected by EMU while armed \\
+\cmd{ARM\_\allowbreak LAUNCH} & Arm/Disarm button & Arms or disarms the currently-selected source (param 1/0); renamed from \cmd{ENABLE\_\allowbreak LCO\_\allowbreak CONTROL} -- see §11 Version History \\
+\cmd{START\_\allowbreak ENGINE} & Launch + CONFIRM (only if still armed for the RCU source) & Arms the 10-step ignition sequence on EMU \\
+\cmd{RCU\_\allowbreak STATUS} & Status button & Requests EMU status summary \\
 \bottomrule
-\end{tabularx}
-\end{center}
+\end{longtable}
+\endgroup
 
 %═══════════════════════════════════════════════════════════════════════════════
 \section{SD Logging}
@@ -284,11 +393,14 @@ Command & Sent by & Notes \\
 
 Log files are stored in the root of the SD card as \texttt{Log\_N.txt}
 (N is auto-incremented to avoid overwriting existing files).
-Each entry is time-stamped from the DS3231 and records all TX and RX events
-in human-readable form, e.g.:
+Each entry uses the shared \sw{Log\_Message()} format
+(\texttt{"MM/DD/YYYY HH:MM:SS.mmm [TAG] message"}), timestamped from the
+DS3231 (falling back to a raw \sw{millis()} count if the RTC never
+initialized). TX events use \texttt{TXR}; RX events use \texttt{RXR};
+other tags cover boot/status/error events, e.g.:
 \begin{lstlisting}[language={},numbers=none]
-10:15:03 [TX] BEGIN_FILL (1) | param: 0
-10:15:03 [RX] BEGIN_FILL (1) | status: OK | r_val: 0 | RSSI: -72
+09/09/2026 10:15:03.142 [TXR] BEGIN_FILL (1) | param: 0
+09/09/2026 10:15:03.318 [RXR] BEGIN_FILL (1) | status: OK | r_val: 0 | RSSI: -72
 \end{lstlisting}
 
 %═══════════════════════════════════════════════════════════════════════════════
@@ -389,8 +501,7 @@ Parameter & Value & Description & Source File \\
 %═══════════════════════════════════════════════════════════════════════════════
 \section{Version History}
 %═══════════════════════════════════════════════════════════════════════════════
-\begin{center}
-\begin{tabularx}{\textwidth}{@{}llY@{}}
+\begin{longtable}{@{}p{1.4cm}p{2.2cm}p{11.5cm}@{}}
 \toprule
 Version & Date & Notes \\
 \midrule
@@ -411,8 +522,31 @@ Version & Date & Notes \\
                    threshold, and calibration constants across the radio, GUI, fill-progress
                    polling, and pressure-monitoring subsystems, with source-file attribution
                    for each. \\
+0.6 & September 2026 & Comprehensive doc-vs-code audit -- this document had fallen well
+                   behind two undocumented redesigns already live in the firmware
+                   (multi-source ignition, \textasciitilde 2026-07-23; fill-progress popup,
+                   \textasciitilde 2026-08-23), neither reflected here until now. Rebuilt \S3
+                   Operator Interface around the actual 9-button layout (Fill/Dump/Status,
+                   Arm-Disarm/Launch, RCU/LCO/AS source select, a relocated Abort) --
+                   replacing a stale 6-button Fill/Dump/Reset/Status/Enable/Launch grid;
+                   removed the nonexistent \cmd{ENABLE\_LCO\_CONTROL} command (renamed
+                   \cmd{ARM\_LAUNCH} months ago) and documented \cmd{SET\_IGNITION\_SOURCE}/
+                   \cmd{ARM\_LAUNCH} and the armed-state lockout (new \S3.2 Multi-Source
+                   Ignition); documented the fill-progress popup (new \S3.4) and corrected
+                   the Fill button's actual behavior (not a toggle); corrected the Launch
+                   confirmation dialog (CONFIRM has a real precondition; touching outside
+                   the overlay also silently dismisses it); corrected the Pressure Warning
+                   section (tank pressure is never in the heartbeat packet, and polling is
+                   \emph{not} continuous -- a real monitoring gap, not just a doc error);
+                   rebuilt the Command Reference table (removed the nonexistent command,
+                   added 4 missing ones, fixed two mislabeled triggers); corrected the
+                   \texttt{Heartbeat\_Command\_Packet} size (1 byte, not 6 -- RCU voltage
+                   was removed from it); fixed \S4 Main Loop Control Flow (2 missing
+                   steps); fixed the SD Logging example (real timestamp format and tags);
+                   corrected the STMPE\_CS pin description (legacy name; it's a touch IRQ,
+                   not an SPI chip-select on the current TSC2007 hardware); added
+                   \sw{KJO\_Status} to the Module Summary. \\
 \bottomrule
-\end{tabularx}
-\end{center}
+\end{longtable}
 
 \end{document}
